@@ -30,11 +30,14 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user or user.is_bot: return
         users_col.update_one(
             {"user_id": user.id},
-            {"$set": {
-                "username": f"@{user.username}" if user.username else user.full_name,
-                "last_seen": datetime.utcnow(),
-                "last_text": update.message.text[:100] if update.message.text else "No text"
-            }}, upsert=True
+            {
+                "$set": {
+                    "username": f"@{user.username}" if user.username else user.full_name,
+                    "last_seen": datetime.utcnow(),
+                    "last_text": update.message.text[:100] if update.message.text else "No text"
+                },
+                "$inc": {"msg_count": 1} # Incrementa il contatore di 1
+            }, upsert=True
         )
 
 async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -66,10 +69,18 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_data:
         data_f = user_data['last_seen'].strftime('%d/%m/%Y %H:%M')
-        await update.message.reply_text(f"👤 {user_data['username']}\n📅 Ultima attività: {data_f}\n💬 Msg: {user_data['last_text']}")
+        # Recupera il conteggio, default a 0 se non esiste
+        count = user_data.get('msg_count', 0) 
+        
+        await update.message.reply_text(
+            f"👤 {user_data['username']}\n"
+            f"📊 Totale messaggi: {count}\n" # Riga aggiunta
+            f"📅 Ultima attività: {data_f}\n"
+            f"💬 Msg: {user_data['last_text']}"
+        )
     else:
-        # MESSAGGIO PERSONALIZZATO RICHIESTO
-        await update.message.reply_text(f"❌ L'utente {target_user} non è presente nel database o non è mai stato attivo dalla data di attivazione del bot.")
+        await update.message.reply_text(f"❌ L'utente {target_user} non è presente nel database.")
+
 
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
