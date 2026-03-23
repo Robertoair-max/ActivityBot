@@ -24,6 +24,10 @@ client = MongoClient(MONGO_URI)
 db = client.monitor_bot
 users_col = db.users
 
+messages_col = db.messages
+# Crea un indice che cancella i documenti dopo 90 giorni (90 * 24 * 3600 secondi)
+messages_col.create_index("timestamp", expireAfterSeconds=7776000)
+
 # Funzione per ottenere l'orario corretto (Italia UTC+1)
 def get_now():
     return datetime.utcnow() + timedelta(hours=1)
@@ -32,14 +36,48 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id == GROUP_MONITOR:
         user = update.effective_user
         if not user or user.is_bot: return
+        
+        now = get_now()
+        username = f"@{user.username}" if user.username else user.full_name
+        
+        # Mantieni l'aggiornamento dell'ultimo accesso (per /list e /user)
         users_col.update_one(
             {"user_id": user.id},
             {"$set": {
-                "username": f"@{user.username}" if user.username else user.full_name,
-                "last_seen": get_now(), # CORRETTO
+                "username": username,
+                "last_seen": now,
                 "last_text": update.message.text[:100] if update.message.text else "No text"
             }}, upsert=True
         )
+        
+        # NUOVO: Salva il singolo messaggio per il conteggio storico
+        messages_col.insert_one({
+            "username": username,
+            "timestamp": now
+        })
+
+async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ADMIN: return
+    try:
+        # Uso: /count 7 @username
+        days = int(context.args[0])
+        target_username = context.args[1]
+        
+        # Cap a 90 giorni per coerenza con il database
+        search_days = min(days, 90)
+        limit_date = get_now() - timedelta(days=search_days)
+        
+        count = messages_col.count_documents({
+            "username": target_username,
+            "timestamp": {"$gte": limit_date}
+        })
+        
+        await update.message.reply_text(
+            f"📊 {target_username} ha inviato **{count}** messaggi negli ultimi {search_days} giorni."
+        )
+    except (IndexError, ValueError):
+        await update.message.reply_text("❌ Uso: `/count 7 @username` (max 90gg)")
+
 
 async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
@@ -92,6 +130,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("list", list_inactive))
+    app.add_handler(CommandHandler("count", count_messages))
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("clean", clean_user))
     app.add_handler(CommandHandler("refresh", refresh))
