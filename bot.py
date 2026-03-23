@@ -41,31 +41,49 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     try:
         days = int(context.args[0])
-        limit = datetime.utcnow() - timedelta(days=days)
-        inactive = users_col.find({"last_seen": {"$lt": limit}})
-        res = f"⚠️ Inattivi > {days}gg:\n"
-        for u in inactive: res += f"- {u['username']} ({u['last_seen'].strftime('%d/%m')})\n"
-        await update.message.reply_text(res if "-" in res else "Tutti attivi!")
+        limit_date = datetime.utcnow() - timedelta(days=days)
+        # Limite a 30 per evitare errori di lunghezza messaggio
+        inactive = users_col.find({"last_seen": {"$lt": limit_date}}).limit(30)
+        
+        testo_giorni = "OGGI" if days == 0 else f"{days}gg"
+        res = f"⚠️ Inattivi da: {testo_giorni}\n"
+        count = 0
+        for u in inactive: 
+            res += f"- {u['username']} ({u['last_seen'].strftime('%d/%m %H:%M')})\n"
+            count += 1
+            
+        await update.message.reply_text(res if count > 0 else "✅ Tutti attivi!")
     except: await update.message.reply_text("Uso: /list 5")
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
-    user_data = users_col.find_one({"username": context.args[0]})
-    if user_data: await update.message.reply_text(f"👤 {user_data['username']}\nUltimo: {user_data['last_seen']}")
-    else: await update.message.reply_text("Non trovato.")
+    if not context.args:
+        await update.message.reply_text("Uso: /user @username")
+        return
+
+    target_user = context.args[0]
+    user_data = users_col.find_one({"username": target_user})
+    
+    if user_data:
+        data_f = user_data['last_seen'].strftime('%d/%m/%Y %H:%M')
+        await update.message.reply_text(f"👤 {user_data['username']}\n📅 Ultima attività: {data_f}\n💬 Msg: {user_data['last_text']}")
+    else:
+        # MESSAGGIO PERSONALIZZATO RICHIESTO
+        await update.message.reply_text(f"❌ L'utente {target_user} non è presente nel database o non è mai stato attivo dalla data di attivazione del bot.")
 
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
-    users_col.delete_one({"username": context.args[0]})
-    await update.message.reply_text("Eliminato.")
+    if not context.args: return
+    username = context.args[0]
+    users_col.delete_one({"username": username})
+    await update.message.reply_text(f"✅ Record di {username} eliminato.")
 
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     users_col.delete_many({"$or": [{"username": None}, {"last_seen": None}]})
-    await update.message.reply_text("DB Pulito.")
+    await update.message.reply_text("🔄 DB Pulito e righe vuote rimosse.")
 
 def main():
-    # Avvia Flask in un thread separato
     threading.Thread(target=run_flask, daemon=True).start()
     
     app = Application.builder().token(TOKEN).build()
@@ -74,7 +92,9 @@ def main():
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("clean", clean_user))
     app.add_handler(CommandHandler("refresh", refresh))
-    app.run_polling()
+    
+    print("🚀 Bot avviato e in ascolto...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
