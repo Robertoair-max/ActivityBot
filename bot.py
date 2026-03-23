@@ -24,6 +24,10 @@ client = MongoClient(MONGO_URI)
 db = client.monitor_bot
 users_col = db.users
 
+# Funzione per ottenere l'orario corretto (Italia UTC+1)
+def get_now():
+    return datetime.utcnow() + timedelta(hours=1)
+
 async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id == GROUP_MONITOR:
         user = update.effective_user
@@ -32,7 +36,7 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"user_id": user.id},
             {"$set": {
                 "username": f"@{user.username}" if user.username else user.full_name,
-                "last_seen": datetime.utcnow(),
+                "last_seen": get_now(), # CORRETTO
                 "last_text": update.message.text[:100] if update.message.text else "No text"
             }}, upsert=True
         )
@@ -41,8 +45,8 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     try:
         days = int(context.args[0])
-        limit_date = datetime.utcnow() - timedelta(days=days)
-        # Limite a 30 per evitare errori di lunghezza messaggio
+        limit_date = get_now() - timedelta(days=days) # CORRETTO
+        
         inactive = users_col.find({"last_seen": {"$lt": limit_date}}).limit(30)
         
         testo_giorni = "OGGI" if days == 0 else f"{days}gg"
@@ -68,7 +72,6 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_f = user_data['last_seen'].strftime('%d/%m/%Y %H:%M')
         await update.message.reply_text(f"👤 {user_data['username']}\n📅 Ultima attività: {data_f}\n💬 Msg: {user_data['last_text']}")
     else:
-        # MESSAGGIO PERSONALIZZATO RICHIESTO
         await update.message.reply_text(f"❌ L'utente {target_user} non è presente nel database o non è mai stato attivo dalla data di attivazione del bot.")
 
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
