@@ -136,7 +136,7 @@ def main():
     app.add_handler(CommandHandler("refresh", refresh))
     
     print("🚀 Bot avviato e in ascolto...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, close_loop=True)
 
 if __name__ == "__main__":
     main()
