@@ -81,16 +81,26 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def test_last_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     
-    # Prende l'ultimo messaggio salvato nel DB in ordine cronologico decrescente
+    # Prende l'ultimo messaggio salvato nel DB
     last_msg = messages_col.find_one(sort=[("timestamp", -1)])
     
     if last_msg:
-        ora = last_msg['timestamp'].strftime('%H:%M:%S')
+        now = get_now()
+        last_time = last_msg['timestamp']
+        diff = now - last_time
+        
+        # Calcola se sono passate meno di 2 ore (7200 secondi)
+        is_online = diff.total_seconds() < 7200
+        status_icon = "✅" if is_online else "⚠️"
+        status_text = "ONLINE" if is_online else "OFFLINE (Nessun msg da > 2h)"
+        
+        ora_f = last_time.strftime('%H:%M:%S')
+        
         await update.message.reply_text(
-            f"🔍 **Ultimo messaggio intercettato:**\n"
-            f"👤 Utente: {last_msg['username']}\n"
-            f"⏰ Ora: {ora}\n"
-            f"✅ Il bot sta monitorando correttamente."
+            f"🔍 **Stato Monitoraggio:** {status_text} {status_icon}\n\n"
+            f"👤 Ultimo utente: {last_msg['username']}\n"
+            f"⏰ Ora ultimo msg: {ora_f}\n"
+            f"⏳ Ritardo: {int(diff.total_seconds() // 60)} minuti fa"
         )
     else:
         await update.message.reply_text("❌ Nessun messaggio trovato nel database.")
