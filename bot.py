@@ -190,6 +190,11 @@ async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"⚠️ Nessun dato trovato per {username}.")
 
+async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ADMIN: return
+    users_col.delete_many({"$or": [{"username": None}, {"last_seen": None}]})
+    await update.message.reply_text("🔄 DB Pulito e righe vuote rimosse.")
+
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
     
