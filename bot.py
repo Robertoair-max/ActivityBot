@@ -169,15 +169,26 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
-    if not context.args: return
+    if not context.args:
+        await update.message.reply_text("❌ Uso: `/clean @username`")
+        return
+        
     username = context.args[0]
-    users_col.delete_one({"username": username})
-    await update.message.reply_text(f"✅ Record di {username} eliminato.")
-
-async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ADMIN: return
-    users_col.delete_many({"$or": [{"username": None}, {"last_seen": None}]})
-    await update.message.reply_text("🔄 DB Pulito e righe vuote rimosse.")
+    
+    # Elimina l'anagrafica utente
+    res_user = users_col.delete_one({"username": username})
+    
+    # Elimina tutti i messaggi registrati per quel username
+    res_msgs = messages_col.delete_many({"username": username})
+    
+    if res_user.deleted_count > 0 or res_msgs.deleted_count > 0:
+        await update.message.reply_text(
+            f"✅ Dati di **{username}** eliminati con successo!\n"
+            f"- Record utente: {res_user.deleted_count}\n"
+            f"- Messaggi rimossi: {res_msgs.deleted_count}"
+        )
+    else:
+        await update.message.reply_text(f"⚠️ Nessun dato trovato per {username}.")
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
