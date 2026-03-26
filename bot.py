@@ -170,10 +170,11 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     if not context.args:
-        await update.message.reply_text("❌ Uso: `/clean @username`")
+        await update.message.reply_text("❌ Uso: `/clean nome utente` o `/clean @username`")
         return
         
-    username = context.args[0]
+    # Unisce tutti gli argomenti in una singola stringa separata da spazi
+    username = " ".join(context.args)
     
     # Elimina l'anagrafica utente
     res_user = users_col.delete_one({"username": username})
