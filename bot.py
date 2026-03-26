@@ -78,6 +78,51 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Uso: `/count 7 @username` (max 90gg)")
 
+async def test_last_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ADMIN: return
+    
+    # Prende l'ultimo messaggio salvato nel DB in ordine cronologico decrescente
+    last_msg = messages_col.find_one(sort=[("timestamp", -1)])
+    
+    if last_msg:
+        ora = last_msg['timestamp'].strftime('%H:%M:%S')
+        await update.message.reply_text(
+            f"🔍 **Ultimo messaggio intercettato:**\n"
+            f"👤 Utente: {last_msg['username']}\n"
+            f"⏰ Ora: {ora}\n"
+            f"✅ Il bot sta monitorando correttamente."
+        )
+    else:
+        await update.message.reply_text("❌ Nessun messaggio trovato nel database.")
+
+async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ADMIN: return
+    
+    # Aggregazione per contare TUTTI i messaggi per ogni utente
+    pipeline = [
+        {"$group": {"_id": "$username", "total": {"$sum": 1}}},
+        {"$sort": {"total": -1}}  # Ordina dai più attivi ai meno attivi
+    ]
+    
+    results = list(messages_col.aggregate(pipeline))
+    
+    if not results:
+        await update.message.reply_text("Nessun dato disponibile.")
+        return
+
+    res = "📊 **Classifica Totale Messaggi (Tutti gli utenti):**\n"
+    
+    for item in results:
+        riga = f"- {item['_id']}: {item['total']}\n"
+        
+        # Se il messaggio sta diventando troppo lungo per Telegram, invialo e ricomincia
+        if len(res) + len(riga) > 4000:
+            await update.message.reply_text(res)
+            res = ""
+        res += riga
+    
+    await update.message.reply_text(res)
+
 
 async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
@@ -134,6 +179,8 @@ def main():
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("clean", clean_user))
     app.add_handler(CommandHandler("refresh", refresh))
+    app.add_handler(CommandHandler("test", test_last_msg))
+    app.add_handler(CommandHandler("total", total_messages))
     
     print("🚀 Bot avviato e in ascolto...")
     app.run_polling(drop_pending_updates=True, close_loop=True)
