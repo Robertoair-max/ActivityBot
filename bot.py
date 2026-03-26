@@ -92,7 +92,7 @@ async def test_last_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Calcola se sono passate meno di 2 ore (7200 secondi)
         is_online = diff.total_seconds() < 7200
         status_icon = "✅" if is_online else "⚠️"
-        status_text = "ONLINE" if is_online else "OFFLINE (Nessun msg da > 2h)"
+        status_text = "Bot Online" if is_online else "Bot Offline (Nessun msg da > 2h)"
         
         ora_f = last_time.strftime('%H:%M:%S')
         
