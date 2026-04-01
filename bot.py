@@ -8,13 +8,18 @@ from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQu
 from telegram.error import BadRequest, TelegramError
 from pymongo import MongoClient
 
-# --- SERVER WEB ---
+# --- SERVER WEB (ALLEGGERITO) ---
 webapp = Flask(__name__)
+
 @webapp.route('/')
-def home(): return "Bot is Alive!"
+def home(): 
+    # Risposta ultra-rapida per evitare timeout del cron job
+    return "OK", 200
 
 def run_flask():
-    webapp.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    # Usa una configurazione standard per massimizzare la compatibilità
+    port = int(os.environ.get('PORT', 8080))
+    webapp.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # --- CONFIGURAZIONE ---
 TOKEN = os.getenv("BOT_TOKEN")
@@ -22,6 +27,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 GROUP_MONITOR = int(os.getenv("GROUP_MONITOR", 0))
 GROUP_ADMIN = int(os.getenv("GROUP_ADMIN", 0))
 
+# La connessione al DB avviene dopo l'avvio del server web
 client = MongoClient(MONGO_URI)
 db = client.monitor_bot
 users_col = db.users
@@ -45,18 +51,15 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         messages_col.insert_one({"username": username, "timestamp": now})
 
-# --- COMANDO REFRESH CON BOTTONE ---
+# --- COMANDO REFRESH ---
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     
-    # Pulizia righe corrotte nel DB
     users_col.delete_many({"$or": [{"username": {"$exists": False}}, {"user_id": {"$exists": False}}, {"username": None}]})
-    
     status_msg = await update.message.reply_text("🔄 Sincronizzazione in corso...")
     
     all_users = list(users_col.find())
-    gone_ids = []
-    gone_names = []
+    gone_ids, gone_names = [], []
 
     for user in all_users:
         try:
@@ -70,53 +73,41 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.05)
 
     if gone_ids:
-        # Salviamo temporaneamente la lista degli ID da eliminare nei dati utente del bot
         context.user_data['pending_delete'] = gone_ids
-        
         elenco = "\n".join(f"- {u}" for u in gone_names)
         keyboard = [[InlineKeyboardButton("🗑️ Elimina tutti gli usciti", callback_data="confirm_delete")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await status_msg.edit_text(
             f"🔄 **Database Riorganizzato.**\n\n⚠️ **Utenti usciti/bannati ({len(gone_ids)}):**\n{elenco}",
-            reply_markup=reply_markup
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     else:
         await status_msg.edit_text("🔄 **Database Riorganizzato.**\n✅ Tutti i membri sono presenti.")
 
-# --- GESTIONE CALLBACK (BOTTONI) ---
+# --- GESTIONE CALLBACK ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     if query.data == "confirm_delete":
-        # Chiediamo conferma definitiva
-        keyboard = [
-            [InlineKeyboardButton("✅ SÌ, ELIMINA ORA", callback_data="do_delete")],
-            [InlineKeyboardButton("❌ ANNULLA", callback_data="cancel_delete")]
-        ]
+        keyboard = [[InlineKeyboardButton("✅ SÌ, ELIMINA ORA", callback_data="do_delete")],
+                    [InlineKeyboardButton("❌ ANNULLA", callback_data="cancel_delete")]]
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "do_delete":
         ids_to_remove = context.user_data.get('pending_delete', [])
         if ids_to_remove:
-            # Recuperiamo i nomi per il log finale prima di cancellare
             names = [u['username'] for u in users_col.find({"user_id": {"$in": ids_to_remove}})]
-            
-            # Eliminazione fisica
             users_col.delete_many({"user_id": {"$in": ids_to_remove}})
-            # Opzionale: eliminiamo anche i loro messaggi storici
             messages_col.delete_many({"username": {"$in": names}})
-            
-            await query.edit_message_text(f"✅ Pulizia completata! Rimossi {len(ids_to_remove)} utenti dal database.")
+            await query.edit_message_text(f"✅ Pulizia completata! Rimossi {len(ids_to_remove)} utenti.")
             context.user_data['pending_delete'] = []
         else:
             await query.edit_message_text("⚠️ Errore: Nessun dato da eliminare.")
 
     elif query.data == "cancel_delete":
-        await query.edit_message_text("❌ Operazione annullata. Gli utenti restano nel database.")
+        await query.edit_message_text("❌ Operazione annullata.")
 
-# --- ALTRI COMANDI (Semplificati per brevità, uguali a prima) ---
+# --- ALTRI COMANDI ---
 async def list_inactive(update, context):
     try:
         days = int(context.args[0]); limit_date = get_now() - timedelta(days=days)
@@ -137,8 +128,14 @@ async def clean_user(update, context):
     messages_col.delete_many({"username": name})
     await update.message.reply_text(f"✅ {name} rimosso.")
 
+# --- MAIN ---
 def main():
-    threading.Thread(target=run_flask, daemon=True).start()
+    # 1. Avvia Flask immediatamente in un thread separato
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("🌐 Server Web avviato per Cron Job...")
+
+    # 2. Configura e avvia il Bot
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
@@ -146,11 +143,9 @@ def main():
     app.add_handler(CommandHandler("list", list_inactive))
     app.add_handler(CommandHandler("total", total_messages))
     app.add_handler(CommandHandler("clean", clean_user))
-    
-    # Handler per i bottoni
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    print("🚀 Bot avviato con sistema di conferma eliminazione...")
+    print("🚀 Bot in ascolto...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
