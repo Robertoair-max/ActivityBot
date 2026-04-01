@@ -1,4 +1,4 @@
-import os
+Hiimport os
 import threading
 from flask import Flask
 from datetime import datetime, timedelta
@@ -193,9 +193,44 @@ async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
-    users_col.delete_many({"$or": [{"username": None}, {"last_seen": None}]})
-    await update.message.reply_text("🔄 DB Pulito e righe vuote rimosse.")
+    
+    status_msg = await update.message.reply_text("🔍 Avvio scansione membri... attendere.")
+    
+    # Prendo tutti gli utenti che hanno un user_id salvato
+    all_users = list(users_col.find({"user_id": {"$exists": True}}))
+    
+    out_list = []
+    errors = 0
 
+    for user in all_users:
+        try:
+            # Controllo lo stato dell'utente nel gruppo monitorato
+            member = await context.bot.get_chat_member(chat_id=GROUP_MONITOR, user_id=user['user_id'])
+            
+            # Se lo stato indica che non è più nel gruppo
+            if member.status in ['left', 'kicked']:
+                motivo = "USCITO" if member.status == 'left' else "BANNATO/KICCATO"
+                out_list.append(f"- {user['username']} (ID: {user['user_id']}) -> {motivo}")
+        
+        except Exception:
+            # Se Telegram non lo trova o il bot non ha permessi per quell'utente specifico
+            out_list.append(f"- {user['username']} (ID: {user['user_id']}) -> NON TROVATO/ERRORE")
+            errors += 1
+
+    # Generazione report
+    if not out_list:
+        report = "✅ **Test Completato**: Tutti gli utenti nel DB risultano ancora presenti nel gruppo."
+    else:
+        header = f"⚠️ **Test Completato**: Trovati {len(out_list)} utenti non più presenti:\n\n"
+        report = header + "\n".join(out_list)
+
+    # Gestione messaggio troppo lungo per Telegram (max 4096 caratteri)
+    if len(report) > 4000:
+        for i in range(0, len(report), 4000):
+            await update.message.reply_text(report[i:i+4000])
+    else:
+        await status_msg.edit_text(report)
+        
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
     
