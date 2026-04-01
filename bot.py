@@ -1,13 +1,16 @@
-Hiimport os
+import os
 import threading
+import asyncio
 from flask import Flask
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram.error import BadRequest, TelegramError
 from pymongo import MongoClient
 
 # --- SERVER WEB PER TENERE SVEGLIO IL BOT ---
 webapp = Flask(__name__)
+
 @webapp.route('/')
 def home(): return "Bot is Alive!"
 
@@ -23,12 +26,11 @@ GROUP_ADMIN = int(os.getenv("GROUP_ADMIN", 0))
 client = MongoClient(MONGO_URI)
 db = client.monitor_bot
 users_col = db.users
-
 messages_col = db.messages
-# Crea un indice che cancella i documenti dopo 90 giorni (90 * 24 * 3600 secondi)
+
+# Indice TTL per cancellare i messaggi dopo 90 giorni
 messages_col.create_index("timestamp", expireAfterSeconds=7776000)
 
-# Funzione per ottenere l'orario corretto (Italia UTC+1)
 def get_now():
     return datetime.utcnow() + timedelta(hours=1)
 
@@ -40,7 +42,6 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = get_now()
         username = f"@{user.username}" if user.username else user.full_name
         
-        # Mantieni l'aggiornamento dell'ultimo accesso (per /list e /user)
         users_col.update_one(
             {"user_id": user.id},
             {"$set": {
@@ -50,7 +51,6 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }}, upsert=True
         )
         
-        # NUOVO: Salva il singolo messaggio per il conteggio storico
         messages_col.insert_one({
             "username": username,
             "timestamp": now
@@ -59,11 +59,8 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     try:
-        # Uso: /count 7 @username
         days = int(context.args[0])
         target_username = context.args[1]
-        
-        # Cap a 90 giorni per coerenza con il database
         search_days = min(days, 90)
         limit_date = get_now() - timedelta(days=search_days)
         
@@ -72,169 +69,109 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "timestamp": {"$gte": limit_date}
         })
         
-        await update.message.reply_text(
-            f"📊 {target_username} ha inviato **{count}** messaggi negli ultimi {search_days} giorni."
-        )
+        await update.message.reply_text(f"📊 {target_username} inviato **{count}** messaggi negli ultimi {search_days} giorni.")
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Uso: `/count 7 @username` (max 90gg)")
 
 async def test_last_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
-    
-    # Prende l'ultimo messaggio salvato nel DB
     last_msg = messages_col.find_one(sort=[("timestamp", -1)])
-    
     if last_msg:
         now = get_now()
-        last_time = last_msg['timestamp']
-        diff = now - last_time
-        
-        # Calcola se sono passate meno di 2 ore (7200 secondi)
+        diff = now - last_msg['timestamp']
         is_online = diff.total_seconds() < 7200
         status_icon = "✅" if is_online else "⚠️"
-        status_text = "Bot Online" if is_online else "Bot Offline (Nessun msg da > 2h)"
-        
-        ora_f = last_time.strftime('%H:%M:%S')
-        
         await update.message.reply_text(
-            f"🔍 **Stato Monitoraggio:** {status_text} {status_icon}\n\n"
-            f"👤 Ultimo utente: {last_msg['username']}\n"
-            f"⏰ Ora ultimo msg: {ora_f}\n"
-            f"⏳ Ritardo: {int(diff.total_seconds() // 60)} minuti fa"
+            f"🔍 **Stato Monitoraggio:** {'Online' if is_online else 'Offline'} {status_icon}\n"
+            f"👤 Ultimo: {last_msg['username']}\n"
+            f"⏳ Ritardo: {int(diff.total_seconds() // 60)} min"
         )
     else:
-        await update.message.reply_text("❌ Nessun messaggio trovato nel database.")
+        await update.message.reply_text("❌ Nessun messaggio nel DB.")
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
-    
-    # Aggregazione per contare TUTTI i messaggi per ogni utente
-    pipeline = [
-        {"$group": {"_id": "$username", "total": {"$sum": 1}}},
-        {"$sort": {"total": -1}}  # Ordina dai più attivi ai meno attivi
-    ]
-    
+    pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}]
     results = list(messages_col.aggregate(pipeline))
-    
     if not results:
-        await update.message.reply_text("Nessun dato disponibile.")
+        await update.message.reply_text("Nessun dato.")
         return
-
-    res = "📊 **Classifica Totale Messaggi (Tutti gli utenti):**\n"
-    
+    res = "📊 **Classifica Totale:**\n"
     for item in results:
         riga = f"- {item['_id']}: {item['total']}\n"
-        
-        # Se il messaggio sta diventando troppo lungo per Telegram, invialo e ricomincia
         if len(res) + len(riga) > 4000:
             await update.message.reply_text(res)
             res = ""
         res += riga
-    
     await update.message.reply_text(res)
-
 
 async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     try:
         days = int(context.args[0])
-        limit_date = get_now() - timedelta(days=days) # CORRETTO
-        
+        limit_date = get_now() - timedelta(days=days)
         inactive = users_col.find({"last_seen": {"$lt": limit_date}}).limit(30)
-        
-        testo_giorni = "OGGI" if days == 0 else f"{days}gg"
-        res = f"⚠️ Inattivi da: {testo_giorni}\n"
+        res = f"⚠️ Inattivi da {days}gg:\n"
         count = 0
-        for u in inactive: 
+        for u in inactive:
             res += f"- {u['username']} ({u['last_seen'].strftime('%d/%m %H:%M')})\n"
             count += 1
-            
         await update.message.reply_text(res if count > 0 else "✅ Tutti attivi!")
     except: await update.message.reply_text("Uso: /list 5")
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
-    if not context.args:
-        await update.message.reply_text("Uso: /user @username")
-        return
-
-    target_user = context.args[0]
-    user_data = users_col.find_one({"username": target_user})
-    
+    if not context.args: return
+    user_data = users_col.find_one({"username": context.args[0]})
     if user_data:
-        data_f = user_data['last_seen'].strftime('%d/%m/%Y %H:%M')
-        await update.message.reply_text(f"👤 {user_data['username']}\n📅 Ultima attività: {data_f}\n💬 Msg: {user_data['last_text']}")
+        await update.message.reply_text(f"👤 {user_data['username']}\n📅 Ultima: {user_data['last_seen'].strftime('%d/%m %H:%M')}\n💬: {user_data['last_text']}")
     else:
-        await update.message.reply_text(f"❌ L'utente {target_user} non è presente nel database o non è mai stato attivo dalla data di attivazione del bot.")
+        await update.message.reply_text("❌ Utente non trovato.")
 
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
-    if not context.args:
-        await update.message.reply_text("❌ Uso: `/clean nome utente` o `/clean @username`")
-        return
-        
-    # Unisce tutti gli argomenti in una singola stringa separata da spazi
     username = " ".join(context.args)
-    
-    # Elimina l'anagrafica utente
     res_user = users_col.delete_one({"username": username})
-    
-    # Elimina tutti i messaggi registrati per quel username
     res_msgs = messages_col.delete_many({"username": username})
-    
-    if res_user.deleted_count > 0 or res_msgs.deleted_count > 0:
-        await update.message.reply_text(
-            f"✅ Dati di **{username}** eliminati con successo!\n"
-            f"- Record utente: {res_user.deleted_count}\n"
-            f"- Messaggi rimossi: {res_msgs.deleted_count}"
-        )
-    else:
-        await update.message.reply_text(f"⚠️ Nessun dato trovato per {username}.")
+    await update.message.reply_text(f"✅ {username} rimosso ({res_msgs.deleted_count} msg cancellati).")
 
+# --- NUOVO COMANDO REFRESH POTENZIATO ---
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ADMIN: return
     
-    status_msg = await update.message.reply_text("🔍 Avvio scansione membri... attendere.")
+    # 1. Rimuove righe corrotte
+    users_col.delete_many({"$or": [{"username": {"$exists": False}}, {"user_id": {"$exists": False}}, {"username": None}]})
     
-    # Prendo tutti gli utenti che hanno un user_id salvato
-    all_users = list(users_col.find({"user_id": {"$exists": True}}))
+    status_msg = await update.message.reply_text("🔄 Sincronizzazione database con il gruppo...")
     
-    out_list = []
-    errors = 0
+    all_users = list(users_col.find())
+    gone_users = []
 
     for user in all_users:
         try:
-            # Controllo lo stato dell'utente nel gruppo monitorato
-            member = await context.bot.get_chat_member(chat_id=GROUP_MONITOR, user_id=user['user_id'])
-            
-            # Se lo stato indica che non è più nel gruppo
+            member = await context.bot.get_chat_member(GROUP_MONITOR, user['user_id'])
+            # Se lo stato è uno di questi, l'utente non è più nel gruppo
             if member.status in ['left', 'kicked']:
-                motivo = "USCITO" if member.status == 'left' else "BANNATO/KICCATO"
-                out_list.append(f"- {user['username']} (ID: {user['user_id']}) -> {motivo}")
+                gone_users.append(user['username'])
+        except (BadRequest, TelegramError):
+            # Se l'utente non è trovato o il bot non può vederlo, è considerato "uscito"
+            gone_users.append(user['username'])
         
-        except Exception:
-            # Se Telegram non lo trova o il bot non ha permessi per quell'utente specifico
-            out_list.append(f"- {user['username']} (ID: {user['user_id']}) -> NON TROVATO/ERRORE")
-            errors += 1
+        # Piccolo delay per non saturare le API di Telegram se hai molti utenti
+        await asyncio.sleep(0.05)
 
-    # Generazione report
-    if not out_list:
-        report = "✅ **Test Completato**: Tutti gli utenti nel DB risultano ancora presenti nel gruppo."
+    if gone_users:
+        elenco = "\n".join(f"- {u}" for u in gone_users)
+        testo = f"🔄 **Database Riorganizzato.**\n\n⚠️ **Utenti usciti/bannati/kikkati:**\n{elenco}\n\n*Nota: Questi utenti restano nel DB finché non usi /clean, ma ora sai chi sono.*"
     else:
-        header = f"⚠️ **Test Completato**: Trovati {len(out_list)} utenti non più presenti:\n\n"
-        report = header + "\n".join(out_list)
+        testo = "🔄 **Database Riorganizzato.**\n✅ Tutti gli utenti nel DB sono presenti nel gruppo."
 
-    # Gestione messaggio troppo lungo per Telegram (max 4096 caratteri)
-    if len(report) > 4000:
-        for i in range(0, len(report), 4000):
-            await update.message.reply_text(report[i:i+4000])
-    else:
-        await status_msg.edit_text(report)
-        
+    await status_msg.edit_text(testo[:4096])
+
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
-    
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("list", list_inactive))
     app.add_handler(CommandHandler("count", count_messages))
@@ -244,8 +181,8 @@ def main():
     app.add_handler(CommandHandler("test", test_last_msg))
     app.add_handler(CommandHandler("total", total_messages))
     
-    print("🚀 Bot avviato e in ascolto...")
-    app.run_polling(drop_pending_updates=True, close_loop=True)
+    print("🚀 Bot avviato...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
