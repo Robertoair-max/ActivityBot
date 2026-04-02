@@ -42,7 +42,7 @@ webapp = Flask(__name__)
 
 @webapp.route('/')
 def home():
-    return "Bot is Running", 200
+    return "OK", 200
 
 def run_flask():
     port = int(os.environ.get('PORT', 8080))
