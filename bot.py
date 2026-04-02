@@ -167,7 +167,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     
     app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
-    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=21, minute=30, tzinfo=ITALY_TZ))
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=22, minute=45, tzinfo=ITALY_TZ))
 
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("refresh", refresh))
