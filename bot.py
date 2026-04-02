@@ -171,7 +171,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     # Orari Report ITA (08:00 e 23:05)
     app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
-    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=23, minute=5, tzinfo=ITALY_TZ))
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=23, minute=45, tzinfo=ITALY_TZ))
     # Handlers
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("refresh", refresh))
