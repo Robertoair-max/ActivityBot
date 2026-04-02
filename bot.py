@@ -163,12 +163,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"✅ Rimossi {len(ids)} record.")
 
 def main():
-    threading.Thread(target=run_flask, daemon=True).start()
-    app = Application.builder().token(TOKEN).build()
+    # 1. Avvia Flask in un thread separato
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
     
-    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
-    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=22, minute=45, tzinfo=ITALY_TZ))
+    # 2. Configura l'applicazione
+    # Se TOKEN è None o errato, il bot si fermerà qui con un errore chiaro
+    if not TOKEN:
+        logger.error("BOT_TOKEN mancante nelle variabili d'ambiente!")
+        return
 
+    # Costruzione dell'app con gestione JobQueue
+    builder = Application.builder().token(TOKEN)
+    app = builder.build()
+    
+    # 3. Pianificazione report (08:00 e 21:30 ITA)
+    if app.job_queue:
+        app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
+        app.job_queue.run_daily(perform_status_check, time=dt.time(hour=22, minute=50, tzinfo=ITALY_TZ))
+    else:
+        logger.warning("JobQueue non disponibile! Controlla i requirements.")
+
+    # 4. Registrazione Handlers
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("refresh", refresh))
     app.add_handler(CommandHandler("count", count_messages))
@@ -179,7 +195,7 @@ def main():
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     
+    # 5. Avvio
+    logger.info("🚀 Avvio polling...")
     app.run_polling(drop_pending_updates=True)
 
-if __name__ == '__main__':
-    main()
