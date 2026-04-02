@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 GROUP_MONITOR = int(os.getenv("GROUP_MONITOR", 0))
-GROUP_ADMIN = int(os.getenv("GROUP_ADMIN", 0))
+
+# Gestione Multi-Admin: converte "ID1,ID2" in una lista di interi [ID1, ID2]
+ADMIN_ENV = os.getenv("GROUP_ADMIN", "0")
+GROUP_ADMINS = [int(i.strip()) for i in ADMIN_ENV.split(",") if i.strip()]
 
 # Connessione MongoDB con Test Automatico
 try:
@@ -34,10 +37,9 @@ messages_col = db.messages
 messages_col.create_index("timestamp", expireAfterSeconds=7776000)
 
 def get_now():
-    # Ritorna l'orario attuale italiano (UTC+1)
     return datetime.utcnow() + timedelta(hours=1)
 
-# --- SERVER WEB (Keep-Alive per Render porta 10000) ---
+# --- SERVER WEB (Keep-Alive Render porta 10000) ---
 webapp = Flask(__name__)
 @webapp.route('/')
 def home(): return "Bot is Alive!", 200
@@ -47,7 +49,7 @@ def run_flask():
     logger.info(f"📡 Flask avviato sulla porta {port}")
     webapp.run(host='0.0.0.0', port=port)
 
-# --- FUNZIONE LOGICA TEST (USATA DA /TEST E DA JOBQUEUE) ---
+# --- FUNZIONE LOGICA TEST (MULTI-ADMIN) ---
 async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
     last = messages_col.find_one(sort=[("timestamp", -1)])
     if last:
@@ -57,7 +59,11 @@ async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
     else:
         msg = "❌ Database messaggi vuoto."
     
-    await context.bot.send_message(chat_id=GROUP_ADMIN, text=msg, parse_mode="Markdown")
+    for admin_id in GROUP_ADMINS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=msg, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Errore invio report a {admin_id}: {e}")
 
 # --- HANDLERS LOGICA ---
 
@@ -75,7 +81,7 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         messages_col.insert_one({"username": username, "timestamp": now})
 
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ADMIN: return
+    if update.effective_chat.id not in GROUP_ADMINS: return
     users_col.delete_many({"$or": [{"username": {"$exists": False}}, {"user_id": {"$exists": False}}]})
     all_users = list(users_col.find())
     total = len(all_users)
@@ -96,7 +102,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if curr % 10 == 0 or curr == total:
             try: await status_msg.edit_text(f"⏳ **Sincronizzazione...**\nVerificati: `{curr}` / `{total}`\nUsciti: `{len(gone_ids)}`", parse_mode="Markdown")
             except: pass
-        await asyncio.sleep(0.2) # Anti-Flood 400 utenti
+        await asyncio.sleep(0.2)
 
     if gone_ids:
         context.user_data['pending_delete'] = gone_ids
@@ -108,7 +114,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"✅ Tutti i {total} utenti sono nel gruppo.")
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ADMIN: return
+    if update.effective_chat.id not in GROUP_ADMINS: return
     try:
         days, target = int(context.args[0]), context.args[1]
         limit_date = get_now() - timedelta(days=min(days, 90))
@@ -117,7 +123,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: await update.message.reply_text("❌ Uso: `/count 7 @username`")
 
 async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ADMIN: return
+    if update.effective_chat.id not in GROUP_ADMINS: return
     try:
         days = int(context.args[0])
         limit_date = get_now() - timedelta(days=days)
@@ -128,14 +134,14 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: await update.message.reply_text("❌ Uso: `/list 5`")
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ADMIN: return
+    if update.effective_chat.id not in GROUP_ADMINS: return
     pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}]
     results = list(messages_col.aggregate(pipeline))
     res = "📊 **Classifica Totale:**\n" + "\n".join([f"- {i['_id']}: {i['total']}" for i in results])
     await update.message.reply_text(res[:4000])
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ADMIN: return
+    if update.effective_chat.id not in GROUP_ADMINS: return
     try:
         target = context.args[0]
         u = users_col.find_one({"username": target})
@@ -144,7 +150,7 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: await update.message.reply_text("❌ Uso: `/user @username`")
 
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ADMIN: return
+    if update.effective_chat.id not in GROUP_ADMINS: return
     try:
         target = " ".join(context.args)
         r1 = users_col.delete_one({"username": target})
@@ -152,10 +158,11 @@ async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🗑️ {target} rimosso (Record: {r1.deleted_count}, Msg: {r2.deleted_count})")
     except: await update.message.reply_text("❌ Uso: `/clean @username`")
 
-# --- CALLBACK E AVVIO ---
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if query.message.chat.id not in GROUP_ADMINS:
+        return await query.answer("Non autorizzato.", show_alert=True)
+    
     await query.answer()
     if query.data == "confirm_delete":
         keyboard = [[InlineKeyboardButton("✅ PROCEDI", callback_data="do_delete")], [InlineKeyboardButton("❌ ANNULLA", callback_data="cancel_delete")]]
@@ -173,7 +180,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     jq = app.job_queue
 
-    # Pianificazione Test Automatici (Orari UTC per Render: 08:00 ITA = 07:00 UTC | 21:30 ITA = 20:30 UTC)
+    # Pianificazione (08:00 e 21:30 ITA -> 07:00 e 20:30 UTC)
     jq.run_daily(perform_status_check, time=datetime_time(hour=7, minute=0))
     jq.run_daily(perform_status_check, time=datetime_time(hour=20, minute=30))
 
@@ -187,7 +194,7 @@ def main():
     app.add_handler(CommandHandler("test", lambda u, c: perform_status_check(c)))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("🚀 Bot avviato su Render (Porta 10000)")
+    logger.info(f"🚀 Bot avviato su Render per {len(GROUP_ADMINS)} gruppi admin.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
