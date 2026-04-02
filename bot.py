@@ -194,7 +194,7 @@ def main():
 
     # Pianificazione (08:00 e 21:30 ITA -> 07:00 e 20:30 UTC per Render)
     jq.run_daily(perform_status_check, time=datetime_time(hour=7, minute=0))
-    jq.run_daily(perform_status_check, time=datetime_time(hour=20, minute=35))
+    jq.run_daily(perform_status_check, time=datetime_time(hour=21, minute=42))
 
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("refresh", refresh))
