@@ -1,5 +1,5 @@
-python-telegram-bot[job-queue]
-flask
-pymongo
-dnspython
-pytz
+python-telegram-bot[job-queue]==20.8
+flask==3.0.2
+pymongo[srv]==4.6.1
+dnspython==2.6.1
+pytz==2024.1
