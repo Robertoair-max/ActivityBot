@@ -10,9 +10,8 @@ from flask import Flask
 from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.error import BadRequest, TelegramError
 
-# --- CONFIGURAZIONE E LOGGING ---
+# --- CONFIGURAZIONE ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -23,7 +22,6 @@ ADMIN_ENV = os.getenv("GROUP_ADMIN", "0")
 GROUP_ADMINS = [int(i.strip()) for i in ADMIN_ENV.split(",") if i.strip()]
 ITALY_TZ = pytz.timezone('Europe/Rome')
 
-# Connessione MongoDB
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     db = client.monitor_bot
@@ -33,7 +31,7 @@ try:
 except Exception as e:
     logger.error(f"MongoDB Error: {e}")
 
-# --- SERVER WEB FLASK (Health Check anti-503) ---
+# --- SERVER WEB ---
 webapp = Flask(__name__)
 @webapp.route('/')
 def health(): return "OK", 200
@@ -42,14 +40,18 @@ def run_flask():
     port = int(os.environ.get('PORT', 10000))
     webapp.run(host='0.0.0.0', port=port, threaded=True)
 
-# --- FUNZIONI DI REPORT AUTOMATICO ---
+# --- FUNZIONE STATUS (CORRETTA) ---
 async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
     try:
         last = messages_col.find_one(sort=[("timestamp", -1)])
         if last:
-            diff = int((datetime.utcnow() - last['timestamp']).total_seconds() // 60)
-            status = "🟢 Online" if diff < 120 else "⚠️ Offline"
-            msg = f"📊 **Report Automatico**\n{status}\nUltimo msg: {last['username']} ({diff} min fa)"
+            # Confronto puramente in UTC
+            diff_seconds = (datetime.utcnow() - last['timestamp']).total_seconds()
+            diff_min = int(diff_seconds // 60)
+            status = "🟢 Online" if diff_min < 120 else "⚠️ Offline"
+            # Conversione per l'utente
+            ora_it = last['timestamp'].replace(tzinfo=pytz.utc).astimezone(ITALY_TZ).strftime('%H:%M:%S')
+            msg = f"📊 **Report Automatico**\n{status}\nUltimo msg: {last['username']}\nOra (ITA): {ora_it}\nRitardo: {max(0, diff_min)} min fa"
         else:
             msg = "📊 **Report Automatico**\n❌ Database vuoto."
         for admin_id in GROUP_ADMINS:
@@ -57,12 +59,12 @@ async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
             except: pass
     except Exception as e: logger.error(f"Job Error: {e}")
 
-# --- HANDLERS BOT ---
+# --- HANDLERS ---
 async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id == GROUP_MONITOR:
         user = update.effective_user
         if not user or user.is_bot: return
-        now_utc = datetime.utcnow()
+        now_utc = datetime.utcnow() # SALVA SEMPRE IN UTC
         username = f"@{user.username}" if user.username else user.full_name
         users_col.update_one(
             {"user_id": user.id},
@@ -71,9 +73,20 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         messages_col.insert_one({"username": username, "timestamp": now_utc})
 
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id not in GROUP_ADMINS: return
+    last = messages_col.find_one(sort=[("timestamp", -1)])
+    if last:
+        diff_min = int((datetime.utcnow() - last['timestamp']).total_seconds() // 60)
+        status = "🟢 Online" if diff_min < 120 else "⚠️ Offline"
+        ora_it = last['timestamp'].replace(tzinfo=pytz.utc).astimezone(ITALY_TZ).strftime('%H:%M:%S')
+        # max(0, diff_min) evita il segno meno se i secondi sono leggermente sfasati
+        await update.message.reply_text(f"📊 **Test Stato**\n{status}\nOra ITA: {ora_it}\nRitardo: {max(0, diff_min)} min fa", parse_mode="Markdown")
+    else: await update.message.reply_text("❌ Database vuoto.")
+
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
-    status_msg = await update.message.reply_text("🔄 Sincronizzazione in corso...")
+    status_msg = await update.message.reply_text("🔄 Sincronizzazione...")
     all_users = list(users_col.find())
     gone_ids, gone_names = [], []
     for index, user in enumerate(all_users):
@@ -89,14 +102,15 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if gone_ids:
         context.user_data['pending_delete'] = gone_ids
         elenco = "\n".join(f"- {u}" for u in gone_names[:15])
-        keyboard = [[InlineKeyboardButton("🗑️ Conferma Eliminazione", callback_data="do_delete")]]
+        keyboard = [[InlineKeyboardButton("🗑️ Conferma", callback_data="do_delete")]]
         await status_msg.edit_text(f"⚠️ **Trovati {len(gone_ids)} usciti:**\n\n{elenco}", reply_markup=InlineKeyboardMarkup(keyboard))
     else: await status_msg.edit_text("✅ Database già sincronizzato.")
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     try:
-        days, target = int(context.args[0]), context.args[1]
+        days = int(context.args[0])
+        target = context.args[1]
         limit = datetime.utcnow() - timedelta(days=days)
         count = messages_col.count_documents({"username": target, "timestamp": {"$gte": limit}})
         await update.message.reply_text(f"📊 {target}: **{count}** msg negli ultimi {days}gg.")
@@ -108,8 +122,9 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days = int(context.args[0])
         limit = datetime.utcnow() - timedelta(days=days)
         inactive = users_col.find({"last_seen": {"$lt": limit}}).limit(30)
-        res = f"⚠️ **Inattivi da {days}gg:**\n" + "\n".join([f"- {u['username']} ({u['last_seen'].strftime('%d/%m')})" for u in inactive])
-        await update.message.reply_text(res if "last_seen" in res else "✅ Tutti attivi!")
+        lines = [f"- {u['username']} ({u['last_seen'].replace(tzinfo=pytz.utc).astimezone(ITALY_TZ).strftime('%d/%m %H:%M')})" for u in inactive]
+        res = f"⚠️ **Inattivi da {days}gg:**\n" + "\n".join(lines)
+        await update.message.reply_text(res if lines else "✅ Tutti attivi!")
     except: await update.message.reply_text("❌ Uso: `/list 5`")
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,7 +138,9 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     try:
         u = users_col.find_one({"username": context.args[0]})
-        if u: await update.message.reply_text(f"👤 {u['username']}\nVisto: {u['last_seen'].strftime('%d/%m %H:%M')}\nUltimo msg: `{u['last_text']}`", parse_mode="Markdown")
+        if u:
+            ora_it = u['last_seen'].replace(tzinfo=pytz.utc).astimezone(ITALY_TZ).strftime('%d/%m %H:%M')
+            await update.message.reply_text(f"👤 {u['username']}\nVisto ITA: {ora_it}\nUltimo msg: `{u['last_text']}`", parse_mode="Markdown")
         else: await update.message.reply_text("❌ Non trovato.")
     except: await update.message.reply_text("❌ Uso: `/user @username`")
 
@@ -133,17 +150,8 @@ async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target = context.args[0]
         r1 = users_col.delete_one({"username": target})
         r2 = messages_col.delete_many({"username": target})
-        await update.message.reply_text(f"🗑️ {target} eliminato (Profilo: {r1.deleted_count}, Msg: {r2.deleted_count})")
+        await update.message.reply_text(f"🗑️ {target} rimosso.")
     except: await update.message.reply_text("❌ Uso: `/clean @username`")
-
-async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id not in GROUP_ADMINS: return
-    last = messages_col.find_one(sort=[("timestamp", -1)])
-    if last:
-        diff = int((datetime.utcnow() - last['timestamp']).total_seconds() // 60)
-        status = "🟢 Online" if diff < 120 else "⚠️ Offline"
-        await update.message.reply_text(f"📊 **Test Stato**\n{status}\nUltimo msg: {last['username']} ({diff} min fa)")
-    else: await update.message.reply_text("❌ Database vuoto.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -153,19 +161,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ids = context.user_data.get('pending_delete', [])
         if ids: users_col.delete_many({"user_id": {"$in": ids}})
         await query.edit_message_text(f"✅ Rimossi {len(ids)} record.")
-        context.user_data['pending_delete'] = []
 
-# --- AVVIO ---
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
-    time.sleep(2)
     app = Application.builder().token(TOKEN).build()
     
-    # Pianificazione Report (08:00 e 21:30 ITA)
     app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
-    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=22, minute=40, tzinfo=ITALY_TZ))
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=21, minute=30, tzinfo=ITALY_TZ))
 
-    # Handlers
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("refresh", refresh))
     app.add_handler(CommandHandler("count", count_messages))
@@ -176,7 +179,6 @@ def main():
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info(f"🚀 Bot avviato per {len(GROUP_ADMINS)} gruppi admin.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
