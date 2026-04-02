@@ -4,7 +4,8 @@ import asyncio
 import logging
 import time
 import datetime as dt
-from datetime import datetime, timedelta, time as datetime_time
+from datetime import datetime, timedelta
+import pytz # Fondamentale per l'orario italiano
 from flask import Flask
 from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,9 +20,12 @@ TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 GROUP_MONITOR = int(os.getenv("GROUP_MONITOR", 0))
 
-# Gestione Multi-Admin: inserire ID separati da virgola nelle Env Vars di Render
+# Gestione Multi-Admin: inserire ID separati da virgola (es: -100123,-100456)
 ADMIN_ENV = os.getenv("GROUP_ADMIN", "0")
 GROUP_ADMINS = [int(i.strip()) for i in ADMIN_ENV.split(",") if i.strip()]
+
+# Fuso orario Italiano
+ITALY_TZ = pytz.timezone('Europe/Rome')
 
 # Connessione MongoDB
 try:
@@ -37,7 +41,8 @@ messages_col = db.messages
 messages_col.create_index("timestamp", expireAfterSeconds=7776000)
 
 def get_now():
-    return datetime.utcnow() + timedelta(hours=1)
+    # Ritorna l'orario attuale nel fuso orario italiano
+    return datetime.now(ITALY_TZ)
 
 # --- SERVER WEB (Keep-Alive Render porta 10000) ---
 webapp = Flask(__name__)
@@ -46,7 +51,6 @@ def home(): return "Bot is Alive!", 200
 
 def run_flask():
     port = int(os.environ.get('PORT', 10000))
-    logger.info(f"📡 Flask avviato sulla porta {port}")
     webapp.run(host='0.0.0.0', port=port)
 
 # --- LOGICA TEST (MANUALE E AUTOMATICA) ---
@@ -56,7 +60,9 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     last = messages_col.find_one(sort=[("timestamp", -1)])
     if last:
-        diff = int((get_now() - last['timestamp']).total_seconds() // 60)
+        # Calcolo differenza oraria corretta
+        now = datetime.utcnow() + timedelta(hours=1) # Fallback per calcolo DB
+        diff = int((now - last['timestamp']).total_seconds() // 60)
         status = "🟢 Online" if diff < 120 else "⚠️ Offline (>2h)"
         msg = f"📊 **Test Manuale Stato**\n{status}\n\n👤 Ultimo: {last['username']}\n⏰ Ora: {last['timestamp'].strftime('%H:%M:%S')}\n⏳ Ritardo: {diff} min fa"
     else:
@@ -67,7 +73,8 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
     last = messages_col.find_one(sort=[("timestamp", -1)])
     if last:
-        diff = int((get_now() - last['timestamp']).total_seconds() // 60)
+        now = datetime.utcnow() + timedelta(hours=1)
+        diff = int((now - last['timestamp']).total_seconds() // 60)
         status = "🟢 Online" if diff < 120 else "⚠️ Offline"
         msg = f"📊 **Report Automatico Stato**\n{status}\nUltimo msg: {last['username']} ({diff} min fa)"
     else:
@@ -85,7 +92,7 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id == GROUP_MONITOR:
         user = update.effective_user
         if not user or user.is_bot: return
-        now = get_now()
+        now = datetime.utcnow() + timedelta(hours=1)
         username = f"@{user.username}" if user.username else user.full_name
         users_col.update_one(
             {"user_id": user.id},
@@ -131,7 +138,8 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     try:
         days, target = int(context.args[0]), context.args[1]
-        limit_date = get_now() - timedelta(days=min(days, 90))
+        now = datetime.utcnow() + timedelta(hours=1)
+        limit_date = now - timedelta(days=min(days, 90))
         count = messages_col.count_documents({"username": target, "timestamp": {"$gte": limit_date}})
         await update.message.reply_text(f"📊 {target}: **{count}** msg negli ultimi {days}gg.")
     except: await update.message.reply_text("❌ Uso: `/count 7 @username`")
@@ -140,7 +148,8 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     try:
         days = int(context.args[0])
-        limit_date = get_now() - timedelta(days=days)
+        now = datetime.utcnow() + timedelta(hours=1)
+        limit_date = now - timedelta(days=days)
         inactive = users_col.find({"last_seen": {"$lt": limit_date}}).limit(30)
         lines = [f"- {u['username']} ({u['last_seen'].strftime('%d/%m')})" for u in inactive]
         res = f"⚠️ **Inattivi da {days}gg:**\n" + "\n".join(lines) if lines else "✅ Tutti attivi!"
@@ -192,9 +201,9 @@ def main():
     app = Application.builder().token(TOKEN).build()
     jq = app.job_queue
 
-    # Pianificazione (08:00 e 21:30 ITA -> 07:00 e 20:30 UTC per Render)
-    jq.run_daily(perform_status_check, time=datetime_time(hour=7, minute=0))
-    jq.run_daily(perform_status_check, time=datetime_time(hour=21, minute=42))
+    # Pianificazione report con Fuso Orario Italiano
+    jq.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
+    jq.run_daily(perform_status_check, time=dt.time(hour=22, minute=40, tzinfo=ITALY_TZ))
 
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("refresh", refresh))
@@ -206,7 +215,7 @@ def main():
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info(f"🚀 Bot avviato per {len(GROUP_ADMINS)} gruppi admin.")
+    logger.info(f"🚀 Bot avviato per {len(GROUP_ADMINS)} gruppi admin con fuso orario IT.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
