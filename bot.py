@@ -35,7 +35,6 @@ except Exception as e:
     logger.error(f"❌ Errore connessione MongoDB: {e}")
 
 def get_now():
-    # UTC+1 (Regola in base al tuo fuso orario se necessario)
     return datetime.utcnow() + timedelta(hours=1)
 
 # --- SERVER WEB (Keep-Alive) ---
@@ -52,7 +51,6 @@ def run_flask():
 
 # --- LOGICA STATUS (ONLINE/OFFLINE) ---
 async def get_status_message():
-    """Logica condivisa per determinare se il bot è online o offline."""
     try:
         last_msg = messages_col.find_one(sort=[("timestamp", -1)])
         
@@ -60,7 +58,6 @@ async def get_status_message():
             last_time = last_msg['timestamp']
             diff = get_now() - last_time
             
-            # Online se l'ultimo messaggio ricevuto ha meno di 2 ore
             is_online = diff < timedelta(hours=2)
             status_icon = "🟢" if is_online else "🔴"
             status_text = "ONLINE" if is_online else "OFFLINE (Inattivo)"
@@ -72,10 +69,6 @@ async def get_status_message():
         return f"⚠️ **Errore Database**: {str(e)}"
 
 # --- TASK PIANIFICATI ---
-async def auto_restart_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Restart automatico (os._exit)...")
-    os._exit(0) 
-
 async def status_check_job(context: ContextTypes.DEFAULT_TYPE):
     msg = await get_status_message()
     await context.bot.send_message(chat_id=GROUP_ADMIN, text=msg, parse_mode="Markdown")
@@ -171,10 +164,7 @@ if __name__ == "__main__":
     application = Application.builder().token(TOKEN).build()
     jq = application.job_queue
     
-    # 1. Riavvio ogni 2 ore
-    jq.run_repeating(auto_restart_job, interval=7200, first=7200)
-    
-    # 2. Status check alle 08:00 e 20:00
+    # Status check alle 08:00 e 20:00
     times = [dt.time(hour=8, minute=0), dt.time(hour=20, minute=0)]
     for t in times:
         jq.run_daily(status_check_job, time=t)
