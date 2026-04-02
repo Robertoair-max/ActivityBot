@@ -19,11 +19,11 @@ TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 GROUP_MONITOR = int(os.getenv("GROUP_MONITOR", 0))
 
-# Gestione Multi-Admin: converte "ID1,ID2" in una lista di interi [ID1, ID2]
+# Gestione Multi-Admin: inserire ID separati da virgola nelle Env Vars di Render
 ADMIN_ENV = os.getenv("GROUP_ADMIN", "0")
 GROUP_ADMINS = [int(i.strip()) for i in ADMIN_ENV.split(",") if i.strip()]
 
-# Connessione MongoDB con Test Automatico
+# Connessione MongoDB
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.admin.command('ping')
@@ -49,15 +49,29 @@ def run_flask():
     logger.info(f"📡 Flask avviato sulla porta {port}")
     webapp.run(host='0.0.0.0', port=port)
 
-# --- FUNZIONE LOGICA TEST (MULTI-ADMIN) ---
+# --- LOGICA TEST (MANUALE E AUTOMATICA) ---
+
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id not in GROUP_ADMINS: return
+    
+    last = messages_col.find_one(sort=[("timestamp", -1)])
+    if last:
+        diff = int((get_now() - last['timestamp']).total_seconds() // 60)
+        status = "🟢 Online" if diff < 120 else "⚠️ Offline (>2h)"
+        msg = f"📊 **Test Manuale Stato**\n{status}\n\n👤 Ultimo: {last['username']}\n⏰ Ora: {last['timestamp'].strftime('%H:%M:%S')}\n⏳ Ritardo: {diff} min fa"
+    else:
+        msg = "❌ Database messaggi vuoto."
+    
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
     last = messages_col.find_one(sort=[("timestamp", -1)])
     if last:
         diff = int((get_now() - last['timestamp']).total_seconds() // 60)
-        status = "🟢 Online" if diff < 120 else "⚠️ Offline (Nessun msg da >2h)"
-        msg = f"📊 **Report Stato Bot**\n{status}\n\n👤 Ultimo: {last['username']}\n⏰ Ora: {last['timestamp'].strftime('%H:%M:%S')}\n⏳ Ritardo: {diff} min fa"
+        status = "🟢 Online" if diff < 120 else "⚠️ Offline"
+        msg = f"📊 **Report Automatico Stato**\n{status}\nUltimo msg: {last['username']} ({diff} min fa)"
     else:
-        msg = "❌ Database messaggi vuoto."
+        msg = "📊 **Report Automatico Stato**\n❌ Nessun dato nel database."
     
     for admin_id in GROUP_ADMINS:
         try:
@@ -160,9 +174,7 @@ async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.message.chat.id not in GROUP_ADMINS:
-        return await query.answer("Non autorizzato.", show_alert=True)
-    
+    if query.message.chat.id not in GROUP_ADMINS: return await query.answer("Non autorizzato.", show_alert=True)
     await query.answer()
     if query.data == "confirm_delete":
         keyboard = [[InlineKeyboardButton("✅ PROCEDI", callback_data="do_delete")], [InlineKeyboardButton("❌ ANNULLA", callback_data="cancel_delete")]]
@@ -180,7 +192,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     jq = app.job_queue
 
-    # Pianificazione (08:00 e 21:30 ITA -> 07:00 e 20:30 UTC)
+    # Pianificazione (08:00 e 21:30 ITA -> 07:00 e 20:30 UTC per Render)
     jq.run_daily(perform_status_check, time=datetime_time(hour=7, minute=0))
     jq.run_daily(perform_status_check, time=datetime_time(hour=20, minute=30))
 
@@ -191,10 +203,10 @@ def main():
     app.add_handler(CommandHandler("total", total_messages))
     app.add_handler(CommandHandler("user", get_user))
     app.add_handler(CommandHandler("clean", clean_user))
-    app.add_handler(CommandHandler("test", lambda u, c: perform_status_check(c)))
+    app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info(f"🚀 Bot avviato su Render per {len(GROUP_ADMINS)} gruppi admin.")
+    logger.info(f"🚀 Bot avviato per {len(GROUP_ADMINS)} gruppi admin.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
