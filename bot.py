@@ -159,7 +159,7 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: `/list 7`")
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}, {"$limit": 30}]
+    pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}, {"$limit": 400}]
     results = list(messages_col.aggregate(pipeline))
     res = "📊 **Classifica Messaggi:**\n" + "\n".join([f"- {i['_id']}: {i['total']}" for i in results]) if results else "Nessun dato."
     await update.message.reply_text(res[:4000])
