@@ -58,63 +58,65 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         messages_col.insert_one({"username": username, "timestamp": now_utc})
 
-# --- LOGICA REPORT (TEST E AUTOMATICI) ---
-async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        last = messages_col.find_one(sort=[("timestamp", -1)])
-        if last:
-            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-            diff_min = int((now_utc - last['timestamp']).total_seconds() // 60)
-            status = "🟢 Online" if diff_min < 120 else "⚠️ Offline"
-            last_utc = last['timestamp'].replace(tzinfo=pytz.UTC)
-            ora_it = last_utc.astimezone(ITALY_TZ).strftime('%H:%M:%S')
-            msg = (f"📊 **Report Stato**\n{status}\n\n👤 Ultimo: {last['username']}\n"
-                   f"⏰ Ora ITA: {ora_it}\n⏳ Ritardo: {max(0, diff_min)} min fa")
-        else:
-            msg = "📊 **Report**\n❌ Nessun messaggio nel database."
-        for admin_id in GROUP_ADMINS:
-            try: await context.bot.send_message(chat_id=admin_id, text=msg, parse_mode="Markdown")
-            except: pass
-    except Exception as e: logger.error(f"Errore Job: {e}")
-
-# --- HANDLERS COMANDI ---
-async def test_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id not in GROUP_ADMINS: return
+# --- FUNZIONE GENERICA PER CREARE IL REPORT ---
+def create_status_report():
     last = messages_col.find_one(sort=[("timestamp", -1)])
     if last:
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         diff_min = int((now_utc - last['timestamp']).total_seconds() // 60)
         status = "🟢 Online" if diff_min < 120 else "⚠️ Offline"
+        
+        # Conversione ora per messaggio utente (UTC -> ITA)
         last_utc = last['timestamp'].replace(tzinfo=pytz.UTC)
         ora_it = last_utc.astimezone(ITALY_TZ).strftime('%H:%M:%S')
-        await update.message.reply_text(f"📊 **Test Manuale**\n{status}\nOra ITA: {ora_it}\nRitardo: {max(0, diff_min)} min fa")
-    else: await update.message.reply_text("❌ Database vuoto.")
+        
+        return (f"📊 **Report Stato Bot**\n{status}\n\n"
+                f"👤 Ultimo: {last['username']}\n"
+                f"⏰ Ora ITA: {ora_it}\n"
+                f"⏳ Ritardo: {max(0, diff_min)} min fa")
+    return "📊 **Report Stato Bot**\n❌ Nessun messaggio nel database."
+
+# --- LOGICA REPORT AUTOMATICI (JOB QUEUE) ---
+async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
+    msg = create_status_report()
+    for admin_id in GROUP_ADMINS:
+        try: await context.bot.send_message(chat_id=admin_id, text=msg, parse_mode="Markdown")
+        except: pass
+
+# --- HANDLERS COMANDI ---
+async def test_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id not in GROUP_ADMINS: return
+    msg = create_status_report()
+    # Usiamo reply_text per rispondere nello specifico gruppo admin che ha interrogato
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     status_msg = await update.message.reply_text("🔄 Sincronizzazione in corso...")
     all_users = list(users_col.find())
+    total_db = len(all_users)
     gone_ids, gone_names = [], []
     for i, u in enumerate(all_users):
         try:
             mem = await context.bot.get_chat_member(GROUP_MONITOR, u['user_id'])
             if mem.status in ['left', 'kicked']: gone_ids.append(u['user_id']); gone_names.append(u['username'])
         except: gone_ids.append(u['user_id']); gone_names.append(u['username'])
-        if (i+1) % 10 == 0: await status_msg.edit_text(f"⏳ Verificati: {i+1}/{len(all_users)}\nUsciti: {len(gone_ids)}")
+        if (i+1) % 10 == 0 or (i+1) == total_db:
+            try: await status_msg.edit_text(f"⏳ Verificati: {i+1}/{total_db}\nUsciti rilevati: {len(gone_ids)}")
+            except: pass
         await asyncio.sleep(0.2)
     if gone_ids:
         context.user_data['pending_delete'] = gone_ids
         elenco = "\n".join([f"- {name}" for name in gone_names[:30]])
         if len(gone_names) > 30: elenco += f"\n...e altri {len(gone_names)-30}"
         kb = [[InlineKeyboardButton("🗑️ ELIMINA TUTTI", callback_data="do_del")], [InlineKeyboardButton("❌ ANNULLA", callback_data="cancel_del")]]
-        await status_msg.edit_text(f"⚠️ **Trovati {len(gone_ids)} usciti:**\n\n{elenco}\n\nProcedere?", reply_markup=InlineKeyboardMarkup(kb))
-    else: await status_msg.edit_text("✅ Tutti i membri salvati sono nel gruppo.")
+        await status_msg.edit_text(f"⚠️ **Trovati {len(gone_ids)} usciti:**\n\n{elenco}\n\nProcedere?", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+    else: await status_msg.edit_text("✅ Database sincronizzato. Tutti presenti.")
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     try:
-        days = int(context.args[0])
-        target = context.args[1]
+        days, target = int(context.args[0]), context.args[1]
         limit = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
         count = messages_col.count_documents({"username": target, "timestamp": {"$gte": limit}})
         await update.message.reply_text(f"📊 {target}: **{count}** msg negli ultimi {days}gg.")
@@ -127,28 +129,29 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         limit = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
         inactive = users_col.find({"last_seen": {"$lt": limit}}).limit(30)
         lines = [f"- {u['username']} ({u['last_seen'].replace(tzinfo=pytz.UTC).astimezone(ITALY_TZ).strftime('%d/%m %H:%M')})" for u in inactive]
-        await update.message.reply_text(f"⚠️ **Inattivi:**\n" + "\n".join(lines) if lines else "✅ Tutti attivi!")
+        await update.message.reply_text(f"⚠️ **Inattivi da {days}gg:**\n" + "\n".join(lines) if lines else "✅ Tutti attivi!")
     except: await update.message.reply_text("❌ Uso: `/list 5`")
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}]
-    res = "📊 Classifica Messaggi:\n" + "\n".join([f"- {i['_id']}: {i['total']}" for i in messages_col.aggregate(pipeline)])
-    await update.message.reply_text(res[:4000])
+    res = "📊 **Classifica Messaggi:**\n" + "\n".join([f"- {i['_id']}: {i['total']}" for i in messages_col.aggregate(pipeline)])
+    await update.message.reply_text(res[:4000], parse_mode="Markdown")
 
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     try:
         target = context.args[0]
-        users_col.delete_one({"username": target})
-        messages_col.delete_many({"username": target})
-        await update.message.reply_text(f"🗑️ Dati di {target} rimossi.")
+        r1 = users_col.delete_one({"username": target})
+        r2 = messages_col.delete_many({"username": target})
+        await update.message.reply_text(f"🗑️ Dati di {target} rimossi dal database.")
     except: await update.message.reply_text("❌ Uso: `/clean @username`")
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     try:
-        u = users_col.find_one({"username": context.args[0]})
+        target = context.args[0]
+        u = users_col.find_one({"username": target})
         if u:
             ora_it = u['last_seen'].replace(tzinfo=pytz.UTC).astimezone(ITALY_TZ).strftime('%d/%m %H:%M')
             await update.message.reply_text(f"👤 {u['username']}\nVisto ITA: {ora_it}\nUltimo msg: `{u['last_text']}`", parse_mode="Markdown")
@@ -169,9 +172,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    # Orari Report ITA (08:00 e 23:05)
+    
+    # Orari Report ITA (08:00 e 20:00)
     app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
-    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=23, minute=45, tzinfo=ITALY_TZ))
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=0, minute=10, tzinfo=ITALY_TZ))
+
     # Handlers
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
     app.add_handler(CommandHandler("refresh", refresh))
@@ -182,7 +187,7 @@ def main():
     app.add_handler(CommandHandler("clean", clean_user))
     app.add_handler(CommandHandler("test", test_manual))
     app.add_handler(CallbackQueryHandler(button_handler))
-    # Start
+    
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
