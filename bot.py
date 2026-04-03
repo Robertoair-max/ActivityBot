@@ -5,7 +5,7 @@ import logging
 import datetime as dt
 from datetime import datetime, timedelta, timezone
 import pytz
-from flask import Flask, make_response
+from flask import Flask
 from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
@@ -14,6 +14,10 @@ from telegram.constants import ParseMode
 # --- CONFIGURAZIONE E LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Disabilita i log di Flask (Werkzeug) per risparmiare CPU e pulire la console
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
@@ -33,19 +37,23 @@ try:
 except Exception as e:
     logger.error(f"❌ Errore MongoDB: {e}")
 
- --- SERVER WEB (Ottimizzato per Stabilità e Risorse) ---
+# --- SERVER WEB (Ottimizzato per Cron Job / Render) ---
 webapp = Flask(__name__)
-
-# Disabilitiamo i log di Flask (riduce carico CPU e rumore nei log)
-import logging
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
 
 @webapp.route('/')
 def health():
-    # Risposta immediata: 0 calcoli, 0 database. Solo per dire che il processo è vivo.
+    # Risposta ultra-leggera per evitare timeout 503
+    return "OK", 200
 
-# Avvio del thread prima del bot
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    try:
+        # debug=False e use_reloader=False impediscono crash di porta su Render
+        webapp.run(host='0.0.0.0', port=port, threaded=True, debug=False, use_reloader=False)
+    except Exception as e:
+        logger.error(f"❌ Errore Flask: {e}")
+
+# Avvio del thread Flask prima del bot
 threading.Thread(target=run_flask, daemon=True).start()
 
 # --- LOGICA TRACKING ---
@@ -106,7 +114,6 @@ async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("⏳ Calcolo classifica completa...")
     try:
         def get_data():
-            # Rimosso il limite per prendere tutti gli utenti
             pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}]
             return list(messages_col.aggregate(pipeline))
         
@@ -117,27 +124,21 @@ async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("📊 Database vuoto.")
             return
 
-        # Cancelliamo il messaggio di attesa per iniziare l'invio dei blocchi
         await status_msg.delete()
-
         lines = [f"- {i['_id']}: <b>{i['total']}</b>" for i in results]
         
-        # Suddividiamo in blocchi da 100 utenti
         chunk_size = 100
         for i in range(0, len(lines), chunk_size):
             chunk = lines[i:i + chunk_size]
             titolo = f"<b>📊 Classifica Messaggi (Parte {i//chunk_size + 1}):</b>\n"
             message_text = titolo + "\n".join(chunk)
             
-            # Invio del blocco (limitato comunque a 4000 char per sicurezza interna di Telegram)
             await context.bot.send_message(
                 chat_id=update.effective_chat.id, 
                 text=message_text[:4000], 
                 parse_mode=ParseMode.HTML
             )
-            # Piccolo delay per evitare il flood limit di Telegram
             await asyncio.sleep(0.5)
-
     except Exception as e:
         logger.error(f"Errore classifica: {e}")
         await update.message.reply_text("❌ Errore nel calcolo della classifica completa.")
@@ -229,6 +230,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Errore pulsanti: {e}")
 
+# --- MAIN ---
 def main():
     try:
         app = Application.builder().token(TOKEN).build()
@@ -251,7 +253,7 @@ def main():
         
         logger.info("🚀 Bot avviato e pronto!")
         app.run_polling(drop_pending_updates=True)
-    	except Exception as e:
+    except Exception as e:
         logger.error(f"Errore fatale all'avvio: {e}")
 
 if __name__ == '__main__':
