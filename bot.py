@@ -33,18 +33,23 @@ try:
 except Exception as e:
     logger.error(f"❌ Errore MongoDB: {e}")
 
-# --- SERVER WEB (Health Check) ---
+# --- SERVER WEB (Corretto per Render) ---
 webapp = Flask(__name__)
+
 @webapp.route('/')
-def health(): return "OK", 200
+def health():
+    return "Bot is alive!", 200
 
 def run_flask():
+    # Render assegna una porta dinamica, dobbiamo leggerla ogni volta
+    port = int(os.environ.get('PORT', 10000))
     try:
-        port = int(os.environ.get('PORT', 10000))
+        # Importante: host='0.0.0.0' permette l'accesso dall'esterno
         webapp.run(host='0.0.0.0', port=port, threaded=True)
     except Exception as e:
         logger.error(f"❌ Errore Flask: {e}")
 
+# Avvio del thread prima del bot
 threading.Thread(target=run_flask, daemon=True).start()
 
 # --- LOGICA TRACKING ---
