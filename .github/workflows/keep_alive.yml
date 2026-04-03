@@ -3,7 +3,7 @@ name: Keep Render Alive
 on:
   schedule:
     # Esegue il ping ogni 10 minuti
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch: 
 
 jobs:
