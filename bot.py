@@ -235,7 +235,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def self_ping(context: ContextTypes.DEFAULT_TYPE):
     try:
         # Usa l'URL pubblico del tuo bot su Render
-        url = "https://onrender.com" 
+        url = "https://activitybot-md6m.onrender.com" 
         response = requests.get(url, timeout=10)
         logger.info(f"📡 Self-ping: Status {response.status_code}")
     except Exception as e:
