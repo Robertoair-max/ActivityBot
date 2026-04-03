@@ -173,9 +173,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
-    # Orari Report ITA (08:00 e 20:00)
+    # Orari Report ITA (08:00 14:00 20:00)
     app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
-    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=0, minute=10, tzinfo=ITALY_TZ))
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=14, minute=0, tzinfo=ITALY_TZ))
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=20, minute=0, tzinfo=ITALY_TZ))
 
     # Handlers
     app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
