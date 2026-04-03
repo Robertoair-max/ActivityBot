@@ -1,6 +1,4 @@
 python-telegram-bot[job-queue]
+pymongo
 flask
-pymongo[srv]
-dnspython
 pytz
-requests
