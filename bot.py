@@ -166,8 +166,8 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 gone_ids.append(u['user_id'])
                 gone_names.append(u['username'])
-            if (i+1) % 15 == 0: await msg.edit_text(f"⏳ Verificati: {i+1}/{len(all_u)}")
-            await asyncio.sleep(0.1)
+            if (i+1) % 10 == 0: await msg.edit_text(f"⏳ Verificati: {i+1}/{len(all_u)}")
+            await asyncio.sleep(0.2)
         
         if gone_ids:
             context.user_data['pending_del'] = gone_ids
