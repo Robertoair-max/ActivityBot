@@ -104,17 +104,43 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
+    
+    # 1. Feedback immediato all'utente
+    status_msg = await update.message.reply_text("⏳ Calcolo classifica in corso...")
+    
     try:
-        pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}, {"$limit": 50}]
-        results = list(messages_col.aggregate(pipeline))
+        # 2. Definiamo l'operazione DB
+        def get_data():
+            pipeline = [
+                {"$group": {"_id": "$username", "total": {"$sum": 1}}},
+                {"$sort": {"total": -1}},
+            ]
+            # Usiamo list() per consumare il cursore
+            return list(messages_col.aggregate(pipeline))
+
+        # 3. Eseguiamo l'operazione in un thread separato per non bloccare il bot
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, get_data)
+
         if not results:
-            await update.message.reply_text("📊 Database vuoto.")
+            await status_msg.edit_text("📊 Il database dei messaggi è vuoto.")
             return
-        res = "📊 **Classifica Messaggi:**\n" + "\n".join([f"- {i['_id']}: {i['total']}" for i in results])
-        await update.message.reply_text(res[:4000], parse_mode="Markdown")
+
+        # 4. Costruiamo la stringa con gestione dei null
+        lines = []
+        for i in results:
+            username = i.get('_id') or "Utente Sconosciuto"
+            count = i.get('total', 0)
+            lines.append(f"- {username}: **{count}**")
+        
+        res = "📊 **Classifica Messaggi:**\n" + "\n".join(lines)
+        
+        # 5. Modifichiamo il messaggio di attesa invece di inviarne uno nuovo
+        await status_msg.edit_text(res[:4000], parse_mode="Markdown")
+
     except Exception as e:
-        logger.error(f"Errore total: {e}")
-        await update.message.reply_text("❌ Errore nel calcolo.")
+        logger.error(f"❌ Errore critico in total_messages: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Errore tecnico: {str(e)}")
 
 async def clean_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
