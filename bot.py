@@ -10,6 +10,7 @@ from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
+import requests
 
 # --- CONFIGURAZIONE E LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -231,6 +232,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Errore pulsanti: {e}")
 
+async def self_ping(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Usa l'URL pubblico del tuo bot su Render
+        url = "https://onrender.com" 
+        response = requests.get(url, timeout=10)
+        logger.info(f"📡 Self-ping: Status {response.status_code}")
+    except Exception as e:
+        logger.error(f"⚠️ Self-ping fallito: {e}")
+
 def main():
         # 1. Avvia Flask per primo (come nel secondo codice)
         threading.Thread(target=run_flask, daemon=True).start()
@@ -238,6 +248,9 @@ def main():
 
         # 2. Configura il bot
         app = Application.builder().token(TOKEN).build()
+
+        # Nel main(), dopo app = Application.builder()...
+        app.job_queue.run_repeating(self_ping, interval=600, first=10)
         
         # Report schedulati (Fuso Italia)
         app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
