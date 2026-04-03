@@ -102,10 +102,11 @@ async def test_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
-    status_msg = await update.message.reply_text("⏳ Calcolo classifica...")
+    status_msg = await update.message.reply_text("⏳ Calcolo classifica completa...")
     try:
         def get_data():
-            pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}},]
+            # Rimosso il limite per prendere tutti gli utenti
+            pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}]
             return list(messages_col.aggregate(pipeline))
         
         loop = asyncio.get_event_loop()
@@ -115,12 +116,30 @@ async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("📊 Database vuoto.")
             return
 
+        # Cancelliamo il messaggio di attesa per iniziare l'invio dei blocchi
+        await status_msg.delete()
+
         lines = [f"- {i['_id']}: <b>{i['total']}</b>" for i in results]
-        res = "<b>📊 Classifica Messaggi:</b>\n" + "\n".join(lines)
-        await status_msg.edit_text(res[:4000], parse_mode=ParseMode.HTML)
+        
+        # Suddividiamo in blocchi da 100 utenti
+        chunk_size = 100
+        for i in range(0, len(lines), chunk_size):
+            chunk = lines[i:i + chunk_size]
+            titolo = f"<b>📊 Classifica Messaggi (Parte {i//chunk_size + 1}):</b>\n"
+            message_text = titolo + "\n".join(chunk)
+            
+            # Invio del blocco (limitato comunque a 4000 char per sicurezza interna di Telegram)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, 
+                text=message_text[:4000], 
+                parse_mode=ParseMode.HTML
+            )
+            # Piccolo delay per evitare il flood limit di Telegram
+            await asyncio.sleep(0.5)
+
     except Exception as e:
         logger.error(f"Errore classifica: {e}")
-        await status_msg.edit_text("❌ Errore nel calcolo.")
+        await update.message.reply_text("❌ Errore nel calcolo della classifica completa.")
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
