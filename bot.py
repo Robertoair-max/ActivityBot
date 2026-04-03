@@ -34,20 +34,18 @@ except Exception as e:
     logger.error(f"❌ Errore MongoDB: {e}")
 
 # --- SERVER WEB (Corretto per Render) ---
-webapp = Flask(__name__)
 
 @webapp.route('/')
 def health():
-    return "Bot is alive!", 200
+    # Usiamo make_response per poter aggiungere l'header di chiusura
+    r = make_response("OK", 200)
+    r.headers['Connection'] = 'close'
+    return r
 
 def run_flask():
-    # Render assegna una porta dinamica, dobbiamo leggerla ogni volta
+    # Configurazione identica al secondo codice (più stabile)
     port = int(os.environ.get('PORT', 10000))
-    try:
-        # Importante: host='0.0.0.0' permette l'accesso dall'esterno
-        webapp.run(host='0.0.0.0', port=port, threaded=True)
-    except Exception as e:
-        logger.error(f"❌ Errore Flask: {e}")
+    webapp.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # Avvio del thread prima del bot
 threading.Thread(target=run_flask, daemon=True).start()
@@ -234,7 +232,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Errore pulsanti: {e}")
 
 def main():
-    try:
+        # 1. Avvia Flask per primo (come nel secondo codice)
+        threading.Thread(target=run_flask, daemon=True).start()
+        time.sleep(2) # Dagli un attimo per aprire la porta 10000
+
+        # 2. Configura il bot
         app = Application.builder().token(TOKEN).build()
         
         # Report schedulati (Fuso Italia)
@@ -254,9 +256,7 @@ def main():
         app.add_handler(CallbackQueryHandler(button_handler))
         
         logger.info("🚀 Bot avviato e pronto!")
-        app.run_polling(drop_pending_updates=True)
-    except Exception as e:
-        logger.error(f"Errore fatale all'avvio: {e}")
+        app.run_polling()
 
 if __name__ == '__main__':
     main()
