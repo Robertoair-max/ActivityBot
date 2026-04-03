@@ -1,0 +1,15 @@
+name: Keep Render Alive
+
+on:
+  schedule:
+    # Esegue il ping ogni 10 minuti
+    - cron: '*/10 * * * *'
+  workflow_dispatch: 
+
+jobs:
+  ping_render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Risveglio Render
+        run: |
+          curl -s -f https://activitybot-md6m.onrender.com || echo "Ping inviato"
