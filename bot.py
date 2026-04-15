@@ -15,7 +15,6 @@ from telegram.constants import ParseMode
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Disabilita i log di Flask (Werkzeug) per risparmiare CPU e pulire la console
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
@@ -37,23 +36,20 @@ try:
 except Exception as e:
     logger.error(f"❌ Errore MongoDB: {e}")
 
-# --- SERVER WEB (Ottimizzato per Cron Job / Render) ---
+# --- SERVER WEB ---
 webapp = Flask(__name__)
 
 @webapp.route('/')
 def health():
-    # Risposta ultra-leggera per evitare timeout 503
     return "OK", 200
 
 def run_flask():
     port = int(os.environ.get('PORT', 10000))
     try:
-        # debug=False e use_reloader=False impediscono crash di porta su Render
         webapp.run(host='0.0.0.0', port=port, threaded=True, debug=False, use_reloader=False)
     except Exception as e:
         logger.error(f"❌ Errore Flask: {e}")
 
-# Avvio del thread Flask prima del bot
 threading.Thread(target=run_flask, daemon=True).start()
 
 # --- LOGICA TRACKING ---
@@ -73,7 +69,7 @@ async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Errore tracking: {e}")
 
-# --- REPORT STATO (LOGICA) ---
+# --- REPORT STATO ---
 def create_status_report():
     try:
         last = messages_col.find_one(sort=[("timestamp", -1)])
@@ -96,18 +92,13 @@ async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
     for admin_id in GROUP_ADMINS:
         try:
             await context.bot.send_message(chat_id=admin_id, text=msg, parse_mode=ParseMode.HTML)
-        except:
-            pass
+        except: pass
 
 # --- HANDLERS COMANDI ---
-
 async def test_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
-    try:
-        msg = create_status_report()
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.error(f"Errore test_manual: {e}")
+    msg = create_status_report()
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
@@ -116,32 +107,20 @@ async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         def get_data():
             pipeline = [{"$group": {"_id": "$username", "total": {"$sum": 1}}}, {"$sort": {"total": -1}}]
             return list(messages_col.aggregate(pipeline))
-        
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, get_data)
-        
+        results = await asyncio.get_event_loop().run_in_executor(None, get_data)
         if not results:
             await status_msg.edit_text("📊 Database vuoto.")
             return
-
         await status_msg.delete()
         lines = [f"- {i['_id']}: <b>{i['total']}</b>" for i in results]
-        
         chunk_size = 100
         for i in range(0, len(lines), chunk_size):
             chunk = lines[i:i + chunk_size]
-            titolo = f"<b>📊 Classifica Messaggi (Parte {i//chunk_size + 1}):</b>\n"
-            message_text = titolo + "\n".join(chunk)
-            
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id, 
-                text=message_text[:4000], 
-                parse_mode=ParseMode.HTML
-            )
+            message_text = f"<b>📊 Classifica Messaggi (Parte {i//chunk_size + 1}):</b>\n" + "\n".join(chunk)
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=message_text[:4000], parse_mode=ParseMode.HTML)
             await asyncio.sleep(0.5)
     except Exception as e:
         logger.error(f"Errore classifica: {e}")
-        await update.message.reply_text("❌ Errore nel calcolo della classifica completa.")
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
@@ -169,13 +148,14 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 gone_ids.append(u['user_id'])
                 gone_names.append(u['username'])
             if (i+1) % 10 == 0: await msg.edit_text(f"⏳ Verificati: {i+1}/{len(all_u)}")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
         
         if gone_ids:
-            context.user_data['pending_del'] = gone_ids
+            context.user_data['pending_del_ids'] = gone_ids
+            context.user_data['pending_del_names'] = gone_names
             elenco = "\n".join([f"- {n}" for n in gone_names[:15]])
-            kb = [[InlineKeyboardButton("🗑️ ELIMINA", callback_data="do_del")], [InlineKeyboardButton("❌ ANNULLA", callback_data="can_del")]]
-            await msg.edit_text(f"⚠️ <b>Trovati {len(gone_ids)} usciti:</b>\n{elenco}", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            kb = [[InlineKeyboardButton("🗑️ ELIMINA TUTTO", callback_data="do_del")], [InlineKeyboardButton("❌ ANNULLA", callback_data="can_del")]]
+            await msg.edit_text(f"⚠️ <b>Trovati {len(gone_ids)} usciti:</b>\n{elenco}\n\n<i>Rimuoverà anche i loro messaggi dai totali.</i>", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
             await msg.edit_text("✅ Tutti presenti e sincronizzati.")
     except Exception as e:
@@ -221,40 +201,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if q.message.chat.id not in GROUP_ADMINS: return
         await q.answer()
         if q.data == "do_del":
-            ids = context.user_data.get('pending_del', [])
-            if ids: users_col.delete_many({"user_id": {"$in": ids}})
-            await q.edit_message_text(f"✅ Rimossi {len(ids)} record dal database.")
+            ids = context.user_data.get('pending_del_ids', [])
+            names = context.user_data.get('pending_del_names', [])
+            if ids:
+                users_col.delete_many({"user_id": {"$in": ids}})
+                messages_col.delete_many({"username": {"$in": names}})
+                await q.edit_message_text(f"✅ Rimossi {len(ids)} record e relativi messaggi.")
         else:
             await q.edit_message_text("❌ Operazione annullata.")
-        context.user_data['pending_del'] = []
+        context.user_data['pending_del_ids'], context.user_data['pending_del_names'] = [], []
     except Exception as e:
         logger.error(f"Errore pulsanti: {e}")
 
 # --- MAIN ---
 def main():
-    try:
-        app = Application.builder().token(TOKEN).build()
-        
-        # Report schedulati (Fuso Italia)
-        app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
-        app.job_queue.run_daily(perform_status_check, time=dt.time(hour=14, minute=0, tzinfo=ITALY_TZ))
-        app.job_queue.run_daily(perform_status_check, time=dt.time(hour=20, minute=0, tzinfo=ITALY_TZ))
-        
-        # Handlers
-        app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
-        app.add_handler(CommandHandler("total", total_messages))
-        app.add_handler(CommandHandler("count", count_messages))
-        app.add_handler(CommandHandler("refresh", refresh))
-        app.add_handler(CommandHandler("list", list_inactive))
-        app.add_handler(CommandHandler("clean", clean_user))
-        app.add_handler(CommandHandler("user", get_user))
-        app.add_handler(CommandHandler("test", test_manual))
-        app.add_handler(CallbackQueryHandler(button_handler))
-        
-        logger.info("🚀 Bot avviato e pronto!")
-        app.run_polling(drop_pending_updates=True)
-    except Exception as e:
-        logger.error(f"Errore fatale all'avvio: {e}")
+    app = Application.builder().token(TOKEN).build()
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=14, minute=0, tzinfo=ITALY_TZ))
+    app.job_queue.run_daily(perform_status_check, time=dt.time(hour=20, minute=0, tzinfo=ITALY_TZ))
+    
+    app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
+    app.add_handler(CommandHandler("total", total_messages))
+    app.add_handler(CommandHandler("count", count_messages))
+    app.add_handler(CommandHandler("refresh", refresh))
+    app.add_handler(CommandHandler("list", list_inactive))
+    app.add_handler(CommandHandler("clean", clean_user))
+    app.add_handler(CommandHandler("user", get_user))
+    app.add_handler(CommandHandler("test", test_manual))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    logger.info("🚀 Bot avviato!")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
