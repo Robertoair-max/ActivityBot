@@ -36,7 +36,7 @@ try:
 except Exception as e:
     logger.error(f"❌ Errore MongoDB: {e}")
 
-# --- SERVER WEB ---
+# --- SERVER WEB (FLASK) ---
 webapp = Flask(__name__)
 
 @webapp.route('/')
@@ -95,7 +95,7 @@ async def perform_status_check(context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-# --- HANDLERS COMANDI ---
+# --- HANDLERS COMANDI E CALLBACK ---
 
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
@@ -103,7 +103,6 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         all_u = list(users_col.find())
         gone_ids, gone_names = [], []
-        
         for i, u in enumerate(all_u):
             try:
                 m = await context.bot.get_chat_member(GROUP_MONITOR, u['user_id'])
@@ -113,12 +112,10 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 gone_ids.append(u['user_id'])
                 gone_names.append(u['username'])
-            
             if (i+1) % 10 == 0: 
                 await msg.edit_text(f"⏳ Verifica membri: {i+1}/{len(all_u)}")
             await asyncio.sleep(0.1)
 
-        # Controllo messaggi orfani (quelli non presenti in users_col)
         current_valid_names = [u['username'] for u in all_u if u['user_id'] not in gone_ids]
         orphans_count = messages_col.count_documents({"username": {"$nin": current_valid_names}})
 
@@ -127,16 +124,17 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['pending_del_names'] = gone_names
             
             info_text = f"⚠️ <b>Analisi completata:</b>\n"
-            if gone_ids: info_text += f"- Utenti usciti: <b>{len(gone_ids)}</b>\n"
-            if orphans_count: info_text += f"- Messaggi orfani: <b>{orphans_count}</b>\n"
+            if gone_ids:
+                info_text += f"- Utenti usciti (<b>{len(gone_ids)}</b>): <i>{', '.join(gone_names)}</i>\n"
+            if orphans_count:
+                info_text += f"- Messaggi orfani: <b>{orphans_count}</b>\n"
             
-            kb = [[InlineKeyboardButton("🗑️ Sincronizza", callback_data="do_del")], 
+            kb = [[InlineKeyboardButton("🗑️ Sincronizza Ora", callback_data="do_del")], 
                   [InlineKeyboardButton("❌ Annulla", callback_data="can_del")]]
-            
             await msg.edit_text(f"{info_text}\n<i>L'azione pulirà i totali eliminando ogni dato orfano.</i>", 
                                 reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
-            await msg.edit_text("✅ Database già sincronizzato.")
+            await msg.edit_text("✅ Database già sincronizzato. Nessun utente uscito.")
     except Exception as e:
         logger.error(f"Errore refresh: {e}")
 
@@ -145,30 +143,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query
         if q.message.chat.id not in GROUP_ADMINS: return
         await q.answer()
-        
         if q.data == "do_del":
             ids = context.user_data.get('pending_del_ids', [])
+            names = context.user_data.get('pending_del_names', [])
             if ids:
                 users_col.delete_many({"user_id": {"$in": ids}})
             
-            # Sincronizzazione finale: cancella messaggi di chi non è in users_col
             valid_usernames = [u['username'] for u in users_col.find({}, {"username": 1})]
             res = messages_col.delete_many({"username": {"$nin": valid_usernames}})
             
-            await q.edit_message_text(f"✅ **Bonifica completata!**\nRimossi {len(ids)} utenti e {res.deleted_count} messaggi orfani.")
+            nomi_rimossi = ", ".join(names) if names else "nessuno"
+            await q.edit_message_text(f"✅ <b>Bonifica completata!</b>\n\n👤 <b>Rimossi:</b> {nomi_rimossi}\n📊 <b>Messaggi orfani:</b> {res.deleted_count}", parse_mode=ParseMode.HTML)
         else:
             await q.edit_message_text("❌ Operazione annullata.")
         context.user_data.clear()
     except Exception as e:
         logger.error(f"Errore pulsanti: {e}")
-
-async def test_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id not in GROUP_ADMINS: return
-    try:
-        msg = create_status_report()
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.error(f"Errore test_manual: {e}")
 
 async def total_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
@@ -237,13 +227,22 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ Uso: <code>/user @username</code>", parse_mode=ParseMode.HTML)
 
+async def test_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id not in GROUP_ADMINS: return
+    msg = create_status_report()
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
 # --- MAIN ---
 def main():
+    if not TOKEN:
+        logger.error("BOT_TOKEN non configurato!")
+        return
     try:
         app = Application.builder().token(TOKEN).build()
-        app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
-        app.job_queue.run_daily(perform_status_check, time=dt.time(hour=14, minute=0, tzinfo=ITALY_TZ))
-        app.job_queue.run_daily(perform_status_check, time=dt.time(hour=20, minute=0, tzinfo=ITALY_TZ))
+        if app.job_queue:
+            app.job_queue.run_daily(perform_status_check, time=dt.time(hour=8, minute=0, tzinfo=ITALY_TZ))
+            app.job_queue.run_daily(perform_status_check, time=dt.time(hour=14, minute=0, tzinfo=ITALY_TZ))
+            app.job_queue.run_daily(perform_status_check, time=dt.time(hour=20, minute=0, tzinfo=ITALY_TZ))
         
         app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
         app.add_handler(CommandHandler("total", total_messages))
