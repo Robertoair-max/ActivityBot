@@ -123,15 +123,17 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['pending_del_ids'] = gone_ids
             context.user_data['pending_del_names'] = gone_names
             
-            info_text = f"⚠️ <b>Analisi completata:</b>\n"
+            info_text = f"⚠️ <b>Analisi completata:</b>\n\n"
             if gone_ids:
-                info_text += f"- Utenti usciti (<b>{len(gone_ids)}</b>): <i>{', '.join(gone_names)}</i>\n"
+                # Modificato: un nome per riga
+                nomi_lista = "\n".join([f"• <i>{name}</i>" for name in gone_names])
+                info_text += f"Utenti usciti (<b>{len(gone_ids)}</b>):\n{nomi_lista}\n\n"
             if orphans_count:
-                info_text += f"- Messaggi orfani: <b>{orphans_count}</b>\n"
+                info_text += f"Messaggi orfani: <b>{orphans_count}</b>\n"
             
             kb = [[InlineKeyboardButton("🗑️ Sincronizza Ora", callback_data="do_del")], 
                   [InlineKeyboardButton("❌ Annulla", callback_data="can_del")]]
-            await msg.edit_text(f"{info_text}\n<i>L'azione pulirà i totali eliminando ogni dato orfano.</i>", 
+            await msg.edit_text(f"{info_text}<i>L'azione pulirà i totali eliminando ogni dato orfano.</i>", 
                                 reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
             await msg.edit_text("✅ Database già sincronizzato. Nessun utente uscito.")
@@ -152,8 +154,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             valid_usernames = [u['username'] for u in users_col.find({}, {"username": 1})]
             res = messages_col.delete_many({"username": {"$nin": valid_usernames}})
             
-            nomi_rimossi = ", ".join(names) if names else "nessuno"
-            await q.edit_message_text(f"✅ <b>Bonifica completata!</b>\n\n👤 <b>Rimossi:</b> {nomi_rimossi}\n📊 <b>Messaggi orfani:</b> {res.deleted_count}", parse_mode=ParseMode.HTML)
+            # Formattato anche qui per coerenza
+            nomi_rimossi = "\n".join(names) if names else "nessuno"
+            await q.edit_message_text(f"✅ <b>Bonifica completata!</b>\n\n👤 <b>Rimossi:</b>\n{nomi_rimossi}\n\n📊 <b>Messaggi orfani:</b> {res.deleted_count}", parse_mode=ParseMode.HTML)
         else:
             await q.edit_message_text("❌ Operazione annullata.")
         context.user_data.clear()
@@ -198,7 +201,11 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         days = int(context.args[0])
         limit = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
-        inactive = list(users_col.find({"last_seen": {"$lt": limit}}).limit(30))
+        # Modificato: Filtro per escludere @Simnap87
+        inactive = list(users_col.find({
+            "last_seen": {"$lt": limit},
+            "username": {"$ne": "@Simnap87"}
+        }).limit(30))
         lines = [f"- {u['username']} ({u['last_seen'].replace(tzinfo=pytz.UTC).astimezone(ITALY_TZ).strftime('%d/%m')})" for u in inactive]
         await update.message.reply_text(f"⚠️ <b>Inattivi da {days}gg:</b>\n" + "\n".join(lines) if lines else "✅ Tutti attivi!", parse_mode=ParseMode.HTML)
     except:
