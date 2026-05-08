@@ -125,7 +125,6 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             info_text = f"⚠️ <b>Analisi completata:</b>\n\n"
             if gone_ids:
-                # Modificato: un nome per riga
                 nomi_lista = "\n".join([f"• <i>{name}</i>" for name in gone_names])
                 info_text += f"Utenti usciti (<b>{len(gone_ids)}</b>):\n{nomi_lista}\n\n"
             if orphans_count:
@@ -154,7 +153,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             valid_usernames = [u['username'] for u in users_col.find({}, {"username": 1})]
             res = messages_col.delete_many({"username": {"$nin": valid_usernames}})
             
-            # Formattato anche qui per coerenza
             nomi_rimossi = "\n".join(names) if names else "nessuno"
             await q.edit_message_text(f"✅ <b>Bonifica completata!</b>\n\n👤 <b>Rimossi:</b>\n{nomi_rimossi}\n\n📊 <b>Messaggi orfani:</b> {res.deleted_count}", parse_mode=ParseMode.HTML)
         else:
@@ -201,7 +199,6 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         days = int(context.args[0])
         limit = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
-        # Modificato: Filtro per escludere @Simnap87
         inactive = list(users_col.find({
             "last_seen": {"$lt": limit},
             "username": {"$ne": "@Simnap87"}
@@ -234,6 +231,19 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ Uso: <code>/user @username</code>", parse_mode=ParseMode.HTML)
 
+async def today_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Calcola i messaggi inviati oggi (dalla mezzanotte italiana)"""
+    if update.effective_chat.id not in GROUP_ADMINS: return
+    try:
+        now_it = datetime.now(ITALY_TZ)
+        start_of_day_it = now_it.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_of_day_utc = start_of_day_it.astimezone(pytz.UTC).replace(tzinfo=None)
+        
+        count = messages_col.count_documents({"timestamp": {"$gte": start_of_day_utc}})
+        await update.message.reply_text(f"📅 <b>Messaggi oggi:</b> {count}", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Errore /today: {e}")
+
 async def test_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id not in GROUP_ADMINS: return
     msg = create_status_report()
@@ -253,18 +263,19 @@ def main():
         
         app.add_handler(MessageHandler(filters.Chat(GROUP_MONITOR) & ~filters.COMMAND, track_activity))
         app.add_handler(CommandHandler("total", total_messages))
+        app.add_handler(CommandHandler("today", today_messages))
         app.add_handler(CommandHandler("count", count_messages))
-        app.add_handler(CommandHandler("refresh", refresh))
         app.add_handler(CommandHandler("list", list_inactive))
         app.add_handler(CommandHandler("clean", clean_user))
         app.add_handler(CommandHandler("user", get_user))
-        app.add_handler(CommandHandler("test", test_manual))
+        app.add_handler(CommandHandler("refresh", refresh))
+        app.add_handler(CommandHandler("status", test_manual))
         app.add_handler(CallbackQueryHandler(button_handler))
-        
-        logger.info("🚀 Bot avviato!")
+
+        logger.info("🚀 Bot avviato...")
         app.run_polling(drop_pending_updates=True)
     except Exception as e:
-        logger.error(f"Errore fatale: {e}")
+        logger.error(f"❌ Errore avvio bot: {e}")
 
 if __name__ == '__main__':
     main()
