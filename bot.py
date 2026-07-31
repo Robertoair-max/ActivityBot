@@ -201,7 +201,7 @@ async def list_inactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         limit = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
         inactive = list(users_col.find({
             "last_seen": {"$lt": limit},
-            "username": {"$ne": "@Simnap87"}
+            "username": {"$ne": "@utente_test"}
         }).limit(30))
         lines = [f"- {u['username']} ({u['last_seen'].replace(tzinfo=pytz.UTC).astimezone(ITALY_TZ).strftime('%d/%m')})" for u in inactive]
         await update.message.reply_text(f"⚠️ <b>Inattivi da {days}gg:</b>\n" + "\n".join(lines) if lines else "✅ Tutti attivi!", parse_mode=ParseMode.HTML)
